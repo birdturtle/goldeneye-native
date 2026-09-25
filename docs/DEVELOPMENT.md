@@ -113,6 +113,20 @@ GETV_RENDERER=metal ./getv/build_mac.sh all
 .\getv\build_windows.ps1 -Target all
 ```
 
+After the first full build, the normal Windows edit/build/play loop is one command:
+
+```powershell
+.\getv\dev_windows.ps1
+```
+
+It recompiles changed game `.c` files, rebuilds the smaller port layer, relinks,
+and launches the game. Use `-NoRun` to only build or `-Full` after changing game
+headers, generated assets, compiler settings, or patch setup. The helper detects
+newer game headers and assets and selects a full build automatically. It uses
+the exact compiler flags in `build_windows.ps1`; game source paths can also be
+compiled explicitly with `-Target game -GameSource src\game\front.c`, followed
+by `-Target app`. Changes to build flags themselves require `-Full`.
+
 Every build phase must report `0 failed`. A changed built-object count can also indicate that a
 source stopped participating, so compare counts with the baseline instead of checking only the
 link result.

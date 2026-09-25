@@ -253,6 +253,30 @@ else
   ( cd "$DECOMP" && git apply "$HERE/getv/patches/0032-manual-reload.patch" ) \
     || die "0032-manual-reload.patch failed to apply"
 fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0033-simulant-multiplayer.patch" ) 2>/dev/null; then
+  echo "0033-simulant-multiplayer.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0033-simulant-multiplayer.patch" ) \
+    || die "0033-simulant-multiplayer.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0034-file-select-folder-hitbox.patch" ) 2>/dev/null; then
+  echo "0034-file-select-folder-hitbox.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0034-file-select-folder-hitbox.patch" ) \
+    || die "0034-file-select-folder-hitbox.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0035-multiplayer-controls-simulant-speed.patch" ) 2>/dev/null; then
+  echo "0035-multiplayer-controls-simulant-speed.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0035-multiplayer-controls-simulant-speed.patch" ) \
+    || die "0035-multiplayer-controls-simulant-speed.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0036-native-gopos-animation-gait.patch" ) 2>/dev/null; then
+  echo "0036-native-gopos-animation-gait.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0036-native-gopos-animation-gait.patch" ) \
+    || die "0036-native-gopos-animation-gait.patch failed to apply"
+fi
 
 # The ROM's SHA-1, from whichever tool this machine actually has.
 #

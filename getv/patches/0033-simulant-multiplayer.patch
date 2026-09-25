@@ -1,0 +1,2602 @@
+diff --git a/src/bondconstants.h b/src/bondconstants.h
+index 403dba2..f532ce1 100644
+--- a/src/bondconstants.h
++++ b/src/bondconstants.h
+@@ -1964,6 +1964,9 @@ typedef enum MENU
+     MENU_SWITCH_SCREENS,
+     MENU_DISPLAY_CAST,
+     MENU_SPECTRUM_EMU,
++#ifdef GE_PORT_NATIVE
++    MENU_MP_SIMULANTS,
++#endif
+     MENU_MAX
+ } MENU;
+ 
+@@ -3557,6 +3560,11 @@ enum CCRMLUT
+         PROP_CHRTESTTUBE,         /* Glass Test Tube                                                    */
+         PROP_BOLLARD,             /* Bollard                                                            */
+         PROP_MAX
++#ifdef GE_PORT_NATIVE
++        /* GCC otherwise makes this all-nonnegative enum unsigned, so the
++         * -1 "no held model" result of getPropForHeldItem passes >= 0. */
++        , PROP__PORT_SIGNED = -1
++#endif
+     } PROP;
+ #ifdef AIPARSE
+     char *PROP_ToString[] = {
+diff --git a/src/boss.c b/src/boss.c
+index 93dbb68..0afb8a7 100644
+--- a/src/boss.c
++++ b/src/boss.c
+@@ -3,6 +3,10 @@
+ #include <stdlib.h>   /* getenv/strtol for the GETV_STAGE override below */
+ #include <PR/os.h>
+ #include "bondview.h"
++#ifdef GE_PORT_NATIVE
++#include "game/simulant_probe.h"
++#include "game/mp_simulants.h"
++#endif
+ #include <bondconstants.h>
+ #include <bondgame.h>
+ #include "boss.h"
+@@ -434,7 +438,11 @@ void bossMainloop(void)
+         {
+             stringIndex = -1;
+ 
+-            if (g_StageNum != LEVELID_TITLE && get_selected_num_players() >= 2)
++            if (g_StageNum != LEVELID_TITLE && (get_selected_num_players() >= 2
++#ifdef GE_PORT_NATIVE
++                || mpSimulantsIsMatch()
++#endif
++                ))
+             {
+                 stringIndex = 0;
+ 
+@@ -478,6 +486,7 @@ void bossMainloop(void)
+             tokenSetString(memallocstringtable[stringIndex].string);
+         }
+ 
++        simulantProbeStageTeardown();
+         gePortBootMark("bm:mempResetBank");
+         mempResetBank(MEMPOOL_STAGE);
+         gePortBootMark("bm:obBlankResourcesLoadedInBank");
+@@ -528,6 +537,7 @@ void bossMainloop(void)
+         joyCheckStatusThreadSafe();
+         gePortBootMark("bm:lvlStageLoad");
+         lvlStageLoad(g_StageNum);
++        simulantProbeStageReady(g_StageNum);
+         gePortBootMark("bm:viInitBuffers");
+         viInitBuffers();
+         gePortBootMark("bm:debmenuRefresh");
+diff --git a/src/game/bondview.c b/src/game/bondview.c
+index 51a991b..94c85e5 100644
+--- a/src/game/bondview.c
++++ b/src/game/bondview.c
+@@ -38,6 +38,9 @@
+ #include "model.h"
+ #include "mp_music.h"
+ #include "mpmenu.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#endif
+ #include "objecthandler.h"
+ #include "objective_status.h"
+ #include "os_extension.h"
+@@ -1404,7 +1407,7 @@ void init_player_BONDdata(void)
+                          (double) g_CurrentPlayer->field_488.pos.f[2]);
+         }
+     }
+-    if (getPlayerCount() >= 2)
++    if ((getPlayerCount() >= 2 || mpSimulantsIsMatch()))
+     {
+         g_CurrentPlayer->controldef = get_player_control_style(get_cur_playernum());
+         cur_player_set_control_type(get_player_control_style(get_cur_playernum()));
+@@ -1568,7 +1571,7 @@ void bondviewPlayerBeginLife(void)
+ 
+     bondinvAddInvItem(ITEM_FIST);
+ 
+-    if (getPlayerCount() >= 2)
++    if ((getPlayerCount() >= 2 || mpSimulantsIsMatch()))
+     {
+ #ifdef GE_PORT_NATIVE
+         /* GETV-MPARM. A test harness, not a gameplay fix.
+diff --git a/src/game/bondview2.c b/src/game/bondview2.c
+index 307b25a..c7ad16c 100644
+--- a/src/game/bondview2.c
++++ b/src/game/bondview2.c
+@@ -36,6 +36,9 @@ extern s32 gePortCoopPlayers(void);
+ #include "model.h"
+ #include "mp_music.h"
+ #include "mpmenu.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#endif
+ #include "objecthandler.h"
+ #include "objective_status.h"
+ #include "os_extension.h"
+@@ -621,7 +624,11 @@ void solo_char_load(void)
+ 
+         bondviewDeregisterPlayerRoom(g_CurrentPlayer);
+ 
+-        if (getPlayerCount() == 1)
++        if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++            && !mpSimulantsIsMatch()
++#endif
++            )
+         {
+             helddst = fileGetBondForCurrentFolder();
+             switch (g_CurrentPlayer->bondtype)
+@@ -743,7 +750,11 @@ void solo_char_load(void)
+             item = starting_weapon[GUNRIGHT];
+         }
+ 
+-        if (getPlayerCount() == 1)
++        if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++            && !mpSimulantsIsMatch()
++#endif
++            )
+         {
+             remove_item_in_hand(GUNLEFT);
+             remove_item_in_hand(GUNRIGHT);
+@@ -835,7 +846,7 @@ void solo_char_load(void)
+ 
+         if (prop >= 0)
+         {
+-            if (getPlayerCount() == 1)
++            if ((getPlayerCount() == 1 && !mpSimulantsIsMatch()))
+             {
+                 helddst      = cursor;
+ #ifdef GE_PORT_NATIVE
+@@ -1180,7 +1191,11 @@ void bondviewSetCameraMode(s32 arg0)
+             currentPlayerSetFadeFrac(60.0f, 0.0f);
+         }
+ 
+-        if (getPlayerCount() >= 2)
++        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++            || mpSimulantsIsMatch()
++#endif
++            )
+         {
+             fogLoadLevelEnvironment(bossGetStageNum(), 0);
+         }
+@@ -1987,7 +2002,11 @@ void currentPlayerSetYAutoAimEnabled(bool enabled)
+  */
+ bool currentPlayerGetYAutoAimEnabled(void)
+ {
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         return g_CurrentPlayer->autoyaimenabled;
+     }
+@@ -2051,7 +2070,11 @@ void currentPlayerSetXAutoAimEnabled(bool enabled)
+  */
+ bool currentPlayerGetXAutoAimEnabled(void)
+ {
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         return g_CurrentPlayer->autoxaimenabled;
+     }
+@@ -5359,7 +5382,11 @@ void bondviewProcessInput(s8 stick_x, s8 stick_y, u16 buttons, u16 oldbuttons)
+             (g_CurrentPlayer->watch_animation_state == WATCH_ANIMATION_0x5
+                 && g_CurrentPlayer->open_close_solo_watch_menu)
+         )
+-        && (getPlayerCount() == 1))
++        && (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++            && !mpSimulantsIsMatch()
++#endif
++           ))
+     {
+         trigger_solo_watch_menu(0);
+     }
+@@ -5367,7 +5394,11 @@ void bondviewProcessInput(s8 stick_x, s8 stick_y, u16 buttons, u16 oldbuttons)
+     if (g_CurrentPlayer->watch_animation_state == WATCH_ANIMATION_0x0
+         && g_CurrentPlayer->bonddead == FALSE
+         && (
+-            getPlayerCount() == 1
++            (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++             && !mpSimulantsIsMatch()
++#endif
++            )
+             || (
+                 g_stopPlayFlag == 0
+                 && g_gameOverFlag == 0)))
+@@ -5979,7 +6010,11 @@ void bondviewProcessInput(s8 stick_x, s8 stick_y, u16 buttons, u16 oldbuttons)
+         moveData.speedVertaUp = ftemp_nostack_spE8;
+     }
+ 
+-    if (bondviewGetIfCurrentPlayerDamageShowTime() && getPlayerCount() == 1)
++    if (bondviewGetIfCurrentPlayerDamageShowTime() && getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         moveData.triggerOn = 0;
+     }
+@@ -8735,8 +8770,16 @@ void bondviewMovePlayerUpdateViewport(s8 stick_x, s8 stick_y, u16 buttons)
+ 
+     gunSetSightVisible(
+         GUNSIGHTREASON_1,
+-        (getPlayerCount() == 1 && cur_player_get_sight_onscreen_control())
+-            || (getPlayerCount() >= 2 && g_playerPerm->sight)
++        (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++         && !mpSimulantsIsMatch()
++#endif
++         && cur_player_get_sight_onscreen_control())
++            || ((getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                 || mpSimulantsIsMatch()
++#endif
++                ) && g_playerPerm->sight)
+     );
+ 
+ #if defined(VERSION_EU)
+@@ -9626,7 +9669,11 @@ void mp_respawn_handler(void)
+     bondviewClearUpperTextDisplayFlag(-1);
+ 
+ 
+-    if ((getPlayerCount() >= 2) && (startpadcount > 0))
++    if ((getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++          || mpSimulantsIsMatch()
++#endif
++         ) && (startpadcount > 0))
+     {
+         var_v1 = bondviewGetRandomSpawnPadIndex();
+     }
+@@ -10014,7 +10061,11 @@ Gfx *maybe_mp_interface(Gfx *gdl)
+         }
+     }
+ 
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         display_objective_status_text_on_status_change();
+     }
+@@ -10032,7 +10083,11 @@ Gfx *maybe_mp_interface(Gfx *gdl)
+             if (doblood)
+             {
+                 die_blood_image_routine(0);
+-                if (getPlayerCount() == 1)
++                if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                    && !mpSimulantsIsMatch()
++#endif
++                    )
+                 {
+                     // This unusual comma-expression syntax is required for a byte match.
+                     set_missionstate((musicStopSlot(-1), 0));
+@@ -10084,7 +10139,11 @@ Gfx *maybe_mp_interface(Gfx *gdl)
+                 }
+                 if (currentPlayerIsFadeComplete())
+                 {
+-                    if (getPlayerCount() == 1)
++                    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                        && !mpSimulantsIsMatch()
++#endif
++                        )
+                     {
+                         bondviewSetCameraMode(CAMERAMODE_DEATH_CAM_SP);
+                     }
+@@ -10236,7 +10295,11 @@ void bondviewKillCurrentPlayer(void)
+ {
+     if ((g_CurrentPlayer->cheatBondInvincible == 0) && (g_CurrentPlayer->bonddead == FALSE))
+     {
+-        if (g_CurrentPlayer->watch_animation_state != WATCH_ANIMATION_0x0)
++        if (g_CurrentPlayer->watch_animation_state != WATCH_ANIMATION_0x0
++#ifdef GE_PORT_NATIVE
++            && !mpSimulantsIsMatch()
++#endif
++            )
+         {
+             trigger_solo_watch_menu(1);
+         }
+@@ -10352,7 +10415,11 @@ void record_damage_kills(f32 damage_amount, f32 vectorx, f32 vectorz, s32 player
+         hudMakeDamageSegments(g_CurrentPlayer->health_display_values, 0x2E, -1, currentPlayerGetHealth());
+     }
+ 
+-    if (getPlayerCount() < 2 || (g_stopPlayFlag == 0 && g_gameOverFlag == 0))
++    if ((getPlayerCount() < 2
++#ifdef GE_PORT_NATIVE
++         && !mpSimulantsIsMatch()
++#endif
++        ) || (g_stopPlayFlag == 0 && g_gameOverFlag == 0))
+     {
+         if (g_PlayerIsInTank == 1)
+         {
+@@ -10369,7 +10436,11 @@ void record_damage_kills(f32 damage_amount, f32 vectorx, f32 vectorz, s32 player
+             }
+         }
+ 
+-        if (getPlayerCount() >= 2 && get_scenario() == SCENARIO_LTK)
++        if ((getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++             || mpSimulantsIsMatch()
++#endif
++            ) && get_scenario() == SCENARIO_LTK)
+         {
+             // the damage dealt is always equivalent to how much health and armor the player has
+             // the result of this is to always kill the player regardless of how much damage he can sustain
+@@ -10377,14 +10448,22 @@ void record_damage_kills(f32 damage_amount, f32 vectorx, f32 vectorz, s32 player
+         }
+ 
+         if (g_CurrentPlayer->cheatBondInvincible == FALSE && g_CurrentPlayer->bonddead == FALSE && g_PlayerInvincible == FALSE &&
+-            (g_CurrentPlayer->damageshowtime < 0 || (getPlayerCount() >= 2 && g_CurrentPlayer->damageshowtime == 0)))
++            (g_CurrentPlayer->damageshowtime < 0 || ((getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                || mpSimulantsIsMatch()
++#endif
++                ) && g_CurrentPlayer->damageshowtime == 0)))
+         {
+             if (g_CurrentPlayer->watch_animation_state != WATCH_ANIMATION_0x5 && g_CurrentPlayer->watch_animation_state != WATCH_ANIMATION_0xc)
+             {
+                 g_CurrentPlayer->oldhealth = g_CurrentPlayer->bondhealth;
+                 g_CurrentPlayer->oldarmour = g_CurrentPlayer->bondarmour;
+ 
+-                if (getPlayerCount() >= 2)
++                if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                    || mpSimulantsIsMatch()
++#endif
++                    )
+                 {
+                     cur_player_num = get_cur_playernum();
+                     angle = g_playerPointers[cur_player_num]->vv_theta - (360.0f - ((atan2f(vectorx, vectorz) * 180.0f) / 3.1415927f));
+@@ -10419,7 +10498,11 @@ void record_damage_kills(f32 damage_amount, f32 vectorx, f32 vectorz, s32 player
+ 
+                     if (g_CurrentPlayer->bondhealth <= 0.0f)
+                     {
+-                        if (getPlayerCount() >= 2)
++                        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                            || mpSimulantsIsMatch()
++#endif
++                            )
+                         {
+                             sp2C = get_cur_playernum();
+                             sp28 = 0;
+@@ -10883,7 +10966,11 @@ void hudmsgBottomShow(char *string, s32 font, s32 arg2)
+ {
+     s32 abs_index;
+     s32 index;
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         if (display_statusbar < 5)
+         {
+@@ -10925,7 +11012,11 @@ void hudmsgBottomShow(char *mess)
+         assert(font);
+         assert(strlen(mess)<=MAXMESSAGELEN);
+     #endif
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         if (display_statusbar < 5)
+         {
+@@ -10967,7 +11058,11 @@ void bondviewIntroCameraTextTick(void)
+         {
+             g_CurrentPlayer->bondmesscnt -= g_ClockTimer;
+ 
+-            if (getPlayerCount() == 1)
++            if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                && !mpSimulantsIsMatch()
++#endif
++                )
+             {
+                 if (g_CurrentPlayer->bondmesscnt < 0)
+                 {
+@@ -10981,7 +11076,11 @@ void bondviewIntroCameraTextTick(void)
+             }
+         }
+ 
+-        if ((getPlayerCount() == 1) && (g_CurrentPlayer->bondmesscnt < 0) && (display_statusbar > 0))
++        if ((getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++             && !mpSimulantsIsMatch()
++#endif
++            ) && (g_CurrentPlayer->bondmesscnt < 0) && (display_statusbar > 0))
+         {
+             if (display_statusbar >= 2)
+             {
+@@ -11012,7 +11111,11 @@ Gfx* hudmsgBottomRender(Gfx* arg0)
+     if ((g_CurrentPlayer->hudmessoff == FALSE) && (g_CurrentPlayer->bondmesscnt >= 0) && (g_CurrentPlayer->mpmenuon == FALSE))
+     {
+         var_v1 = 0;
+-        if (getPlayerCount() == 1)
++        if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++            && !mpSimulantsIsMatch()
++#endif
++            )
+         {
+             if ((u8) *stringbuffer_lowerleft[status_bar_text_buffer_index] != 0)
+             {
+diff --git a/src/game/bondview_r.c b/src/game/bondview_r.c
+index 6e0ca66..d0ddb25 100644
+--- a/src/game/bondview_r.c
++++ b/src/game/bondview_r.c
+@@ -1,4 +1,7 @@
+ #include <stdlib.h>
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#endif
+ #include <stdio.h>
+ #include <stdio.h>
+ #include <ultra64.h>
+@@ -554,7 +557,11 @@ void bondviewLoadSetupIntroSection(void)
+ 
+     if (startpadcount > 0)
+     {
+-        if ((getPlayerCount() >= 2) && (startpadcount > 0))
++        if ((getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++             || mpSimulantsIsMatch()
++#endif
++            ) && (startpadcount > 0))
+         {
+             rand_pad_index = bondviewGetRandomSpawnPadIndex();
+         }
+@@ -893,7 +900,11 @@ void bondviewLoadSetupIntroSection(void)
+     g_CurrentPlayer->field_3B8.f[1] = (g_CurrentPlayer->field_488.pos.f[1] / FIELD_3B8_FACTOR);
+     g_CurrentPlayer->field_3B8.f[2] = (g_CurrentPlayer->field_488.pos.f[2] / FIELD_3B8_FACTOR);
+ 
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         bondviewSetCameraMode(CAMERAMODE_INTRO);
+     }
+diff --git a/src/game/chraction.c b/src/game/chraction.c
+index a86bef8..1229d71 100644
+--- a/src/game/chraction.c
++++ b/src/game/chraction.c
+@@ -33,6 +33,10 @@ extern s32 gePortTimeFireOn(void);
+ #include "player.h"
+ #include "propobj.h"
+ #include "stan.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_combat.h"
++#include "mp_simulants.h"
++#endif
+ 
+ #ifdef GE_PORT_NATIVE
+ /* GETV_CHR_DEBUG counters -- reported by ge_chr_dbg_report() in chr.c. */
+@@ -2241,7 +2245,10 @@ void triggered_on_shot_hit(ChrRecord *self, coord3d *arg1, f32 arg2, s32 req_ani
+             }
+ 
+             chrDropItems(self);
+-            increment_num_kills_display_text_in_MP();
++#ifdef GE_PORT_NATIVE
++            if (mpCombatShouldCountNativeKill(self))
++#endif
++                increment_num_kills_display_text_in_MP();
+ 
+             if (self->chrflags & CHRFLAG_COUNT_DEATH_AS_CIVILIAN)
+             {
+@@ -2602,7 +2609,11 @@ bool handles_shot_actors(ChrRecord *self, s32 hitpart, coord3d *vector, s32 weap
+ 
+         damageToCause = gunItemGetDestructionAmount(weaponid);
+ 
+-        if (isPlayer && (getPlayerCount() == 1))
++        if (isPlayer && (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++            && !mpSimulantsIsMatch()
++#endif
++            ))
+         {
+             damageToCause *= g_AiHealthModifier;
+         }
+@@ -2691,6 +2702,10 @@ bool handles_shot_actors(ChrRecord *self, s32 hitpart, coord3d *vector, s32 weap
+         else
+         {
+             self->chrflags |= CHRFLAG_WAS_DAMAGED;
++#ifdef GE_PORT_NATIVE
++            if (damageToCause > 0.0f)
++                mpCombatNoteSimulantHit(self, isPlayer ? get_cur_playernum() : -1);
++#endif
+ #    ifdef XBLA
+             if (!cheatIsActive(76))
+ #    endif
+@@ -2713,6 +2728,14 @@ bool handles_shot_actors(ChrRecord *self, s32 hitpart, coord3d *vector, s32 weap
+             f32 endframe2 = -1.0f; //sp30
+             play_sound_for_shot_actor(self);
+ 
++#ifdef GE_PORT_NATIVE
++            /* MP players keep moving after a nonfatal hit. The Simulant is
++             * still a chr, so skip its guard stagger but retain the native
++             * death action for a fatal hit. */
++            if (mpCombatSimulantKeepsMoving(self))
++                return TRUE;
++#endif
++
+             if (chrlvAttackAnimationRelated7F026F30(self, &endframe2)) //chrIsAnimPreventingArgh
+             {
+                 if (endframe2 >= 0.0f)
+@@ -2773,6 +2796,9 @@ s32 chrlvExplosionDamage(ChrRecord *self, coord3d *arg1, f32 damage, s32 arg3)
+     }
+ 
+     self->numarghs += 1;
++#ifdef GE_PORT_NATIVE
++    mpCombatNoteSimulantHit(self, -1);
++#endif
+     self->damage += damage;
+     self->chrflags |= CHRFLAG_WAS_DAMAGED;
+ 
+@@ -2850,7 +2876,10 @@ s32 chrlvExplosionDamage(ChrRecord *self, coord3d *arg1, f32 damage, s32 arg3)
+         }
+ 
+         chrDropItems(self);
+-        increment_num_kills_display_text_in_MP();
++#ifdef GE_PORT_NATIVE
++        if (mpCombatShouldCountNativeKill(self))
++#endif
++            increment_num_kills_display_text_in_MP();
+ 
+         if (self->chrflags & CHRFLAG_COUNT_DEATH_AS_CIVILIAN)
+         {
+diff --git a/src/game/front.c b/src/game/front.c
+index f7d3b9d..9343454 100644
+--- a/src/game/front.c
++++ b/src/game/front.c
+@@ -46,6 +46,9 @@ int ge_csprobe(void) {
+ #include "assets/obseg/text/LtitleE.h"
+ #include "matrixmath.h"
+ #include "bg.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#endif
+ #include "chrai.h"
+ #include "title.h"
+ #include <assets/font_dl.h>
+@@ -3096,7 +3099,13 @@ void interface_menu06_modesel(void)
+             sndPlaySfx(g_musicSfxBufferPtr, DOOR_METAL_CLOSE_SFX, 0);
+         }
+     }
+-    else if ((243.0f <= cursor_v_pos) && (joyGetControllerCount() >= 2))
++    else if ((243.0f <= cursor_v_pos) && (joyGetControllerCount() >=
++#ifdef GE_PORT_NATIVE
++        1
++#else
++        2
++#endif
++        ))
+     {
+         mission_difficulty_highlighted = DIFFICULTY_SECRET;
+         if (joyGetButtonsPressedThisFrame(PLAYER_1, START_BUTTON|Z_TRIG|A_BUTTON))
+@@ -3244,7 +3253,13 @@ Gfx* constructor_menu06_modesel(Gfx* DL)
+ 
+     x = 0x96;
+     y = 0xFC;
+-    if (joyGetControllerCount() >= 2)
++    if (joyGetControllerCount() >=
++#ifdef GE_PORT_NATIVE
++        1
++#else
++        2
++#endif
++        )
+     {
+         text_color = 0xFF;
+     }
+@@ -4376,12 +4391,22 @@ u32 get_player_control_style(s32 playernum)
+ s32 check_if_mp_stage_unlocked(s32 stage)
+ {
+     s32 players;
++#ifdef GE_PORT_NATIVE
++    if (mpSimulantsGetCount() && multi_stage_setups[stage].stage_id != LEVELID_FACILITY)
++        return FALSE;
++#endif
+     if (!multi_stage_setups[stage].min_player)
+     {
+         return FALSE;
+     }
+     players=get_selected_num_players();
+-    if (multi_stage_setups[stage].max_player < players)
++    if (
++#ifndef GE_PORT_NATIVE
++        multi_stage_setups[stage].max_player < players
++#else
++        players > 4
++#endif
++        )
+     {
+         return FALSE;
+     }
+@@ -4393,6 +4418,10 @@ s32 check_if_mp_stage_unlocked(s32 stage)
+     {
+         return TRUE;
+     }
++#ifdef GE_PORT_NATIVE
++    if (mpSimulantsGetCount() && multi_stage_setups[stage].stage_id == LEVELID_FACILITY)
++        return TRUE;
++#endif
+     return FALSE;
+ }
+ 
+@@ -4519,7 +4548,8 @@ s32 gePortMpPlayerCount(void)
+         {
+             s32 n = (s32) strtol(e, NULL, 0);
+ 
+-            if (n >= 2)
++            if (n >= 2 || (n == 1 && getenv("GETV_SIMULANTS") &&
++                           getenv("GETV_SIMULANTS")[0] == '1'))
+             {
+                 const char *sc;
+ 
+@@ -4528,6 +4558,7 @@ s32 gePortMpPlayerCount(void)
+                     n = MAX_PLAYER_COUNT;
+                 }
+                 cached = n;
++                if (n == 1) mpSimulantsSetCount(1, 1);
+ 
+                 /* Make the ordinary globals agree, so every other reader of
+                  * `gamemode` (front.c, ramromreplay.c) sees a consistent world
+@@ -4647,7 +4678,7 @@ s32 get_selected_num_players(void)
+     {
+         s32 mp = gePortMpPlayerCount();
+ 
+-        if (mp >= 2)
++        if (mp >= 1)
+         {
+             return mp;
+         }
+@@ -4782,12 +4813,23 @@ void init_mp_options_for_scenario(s32 numplayers)
+ {
+     s32 i;
+ 
++#ifdef GE_PORT_NATIVE
++    if (numplayers < 1) numplayers = 1;
++    if (numplayers > 4) numplayers = 4;
++    {
++        mpSimulantsSetCount(numplayers, mpSimulantsGetCount());
++    }
++#else
+     if (numplayers < 2)
+     {
+         numplayers = 2;
+     }
++#endif
+ 
+     selected_num_players = numplayers;
++#ifdef GE_PORT_NATIVE
++    if (mpSimulantsGetCount()) MP_stage_selected = MP_STAGE_FACILITY;
++#endif
+ 
+     for (i=0; i < selected_num_players; i++)
+     {
+@@ -4803,19 +4845,129 @@ void init_mp_options_for_scenario(s32 numplayers)
+         }
+     }
+ 
+-    if ((mp_player_counts[scenario].max < selected_num_players) || (selected_num_players < mp_player_counts[scenario].min))
++    if ((mp_player_counts[scenario].max < selected_num_players
++#ifdef GE_PORT_NATIVE
++         + mpSimulantsGetCount()
++#endif
++        ) || (selected_num_players
++#ifdef GE_PORT_NATIVE
++              + mpSimulantsGetCount()
++#endif
++              < mp_player_counts[scenario].min))
+     {
+         reset_mp_options_for_scenario(SCENARIO_NORMAL);
+ 
+     }
+ 
+-    if (multi_stage_setups[MP_stage_selected].max_player < selected_num_players)
++    if (
++#ifndef GE_PORT_NATIVE
++        multi_stage_setups[MP_stage_selected].max_player < selected_num_players
++#else
++        selected_num_players > 4
++#endif
++       )
+     {
+         MP_stage_selected = MP_STAGE_TEMPLE;
+     }
+ }
+ 
+ 
++#ifdef GE_PORT_NATIVE
++/* A native dossier page reached through PLAYERS on the existing options
++ * sheet. Human viewports and AI participants remain separate choices. */
++static void init_mp_simulants(void)
++{
++    tab_prev_selected = FALSE;
++    tab_prev_highlight = FALSE;
++    load_walletbond();
++}
++
++static void interface_mp_simulants(void)
++{
++    int row;
++    viSetFovY(FOV_Y_F);
++    viSetAspect(ASPECT_RATIO_SD);
++    viSetZRange(100.0f, 10000.0f);
++    viSetUseZBuf(0);
++    row = cursor_v_pos < 0x8d ? 0 : 1;
++    tab_prev_highlight = frontCheckCursorOnPreviousTab();
++    if (joyGetButtonsPressedThisFrame(PLAYER_1, B_BUTTON) ||
++        (tab_prev_highlight && joyGetButtonsPressedThisFrame(PLAYER_1, A_BUTTON|Z_TRIG|START_BUTTON))) {
++        sndPlaySfx(g_musicSfxBufferPtr, DOOR_METAL_CLOSE2_SFX, NULL);
++        frontChangeMenu(MENU_MP_OPTIONS, FALSE);
++        return;
++    }
++    if (joyGetButtonsPressedThisFrame(PLAYER_1, A_BUTTON|Z_TRIG)) {
++        if (row == 0) {
++            int next = selected_num_players + 1;
++            if (next > joyGetControllerCount() || next > 4) next = 1;
++            init_mp_options_for_scenario(next);
++            if (next == 1 && mpSimulantsGetCount() == 0)
++                mpSimulantsSetCount(1, 1);
++        } else {
++            mpSimulantsSetCount(selected_num_players, !mpSimulantsGetCount());
++            if (mpSimulantsGetCount()) {
++                MP_stage_selected = MP_STAGE_FACILITY;
++                reset_mp_options_for_scenario(SCENARIO_NORMAL);
++            }
++        }
++        sndPlaySfx(g_musicSfxBufferPtr, DOOR_METAL_CLOSE2_SFX, NULL);
++    }
++    if (joyGetButtonsPressedThisFrame(PLAYER_1, START_BUTTON))
++        frontChangeMenu(MENU_MP_OPTIONS, FALSE);
++    disable_all_switches(walletinst[0]);
++    set_item_visibility_in_objinstance(walletinst[0], SW_TABS, 1);
++    set_item_visibility_in_objinstance(walletinst[0], SW_PAPER, 1);
++    set_item_visibility_in_objinstance(walletinst[0], SW_OHMSS, 1);
++    set_item_visibility_in_objinstance(walletinst[0], SW_CONFIDENTIAL2, 1);
++    frontUpdateControlStickPosition();
++}
++
++static Gfx *constructor_mp_simulants(Gfx *DL)
++{
++    int x, y, w, h;
++    char slot[48];
++    const char *label[2] = { "HUMAN PLAYERS", "SIMULANTS" };
++    DL = frontSetupMenuBackground(DL);
++    DL = microcode_constructor(DL);
++    x = 0x37; y = 0x5f;
++    DL = frontPrintText(DL, &x, &y, "PLAYERS", ptrFontZurichBoldChars,
++                        ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
++    for (int i = 0; i < 2; ++i) {
++        int value = i ? mpSimulantsGetCount() : selected_num_players;
++        y = 0x79 + 20 * i;
++        textMeasure(&h, &w, (char *)label[i], ptrFontZurichBoldChars, ptrFontZurichBold, 0);
++        if (!frontCheckCursorOnPreviousTab() &&
++            (cursor_v_pos < 0x8d ? 0 : 1) == i)
++            DL = microcode_constructor_related_to_menus(DL, 0x37, y - 1, w + 0x3c, y + 14, 0x32);
++        x = 0x39;
++        DL = frontPrintText(DL, &x, &y, (char *)label[i], ptrFontZurichBoldChars,
++                            ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
++        sprintf(slot, "%d", value); x = 0xa0; y = 0x79 + 20 * i;
++        DL = frontPrintText(DL, &x, &y, slot, ptrFontZurichBoldChars,
++                            ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
++    }
++    for (int i = 0; i < 4; ++i) {
++        const char *kind = i < selected_num_players ? "HUMAN" :
++                           i < selected_num_players + mpSimulantsGetCount() ? "SIMULANT" : "EMPTY";
++        sprintf(slot, "%d  %s", i + 1, kind);
++        x = 0x39; y = 0xb5 + i * 20;
++        DL = frontPrintText(DL, &x, &y, slot, ptrFontZurichBoldChars,
++                            ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
++    }
++    if (selected_num_players + mpSimulantsGetCount() < 2) {
++        x = 0x39; y = 0x105;
++        DL = frontPrintText(DL, &x, &y, "2 COMBATANTS REQUIRED", ptrFontZurichBoldChars,
++                            ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
++    }
++    x = 0x39; y = 0x119;
++    DL = frontPrintText(DL, &x, &y, "SIMULANT: 1 HUMAN / FACILITY", ptrFontZurichBoldChars,
++                        ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
++    DL = frontAddPreviousTabText(DL);
++    return frontDrawCursor(DL);
++}
++#endif
++
+ //********************************************************************************************************
+ //MULTIPLAYER OPTIONS
+ //********************************************************************************************************
+@@ -4842,6 +4994,9 @@ void init_menu0E_mpoptions(void)
+     if (selected_num_players == 0)
+     {
+         numplayers = joyGetControllerCount();
++#ifdef GE_PORT_NATIVE
++        if (numplayers < 2) mpSimulantsSetCount(1, 1);
++#endif
+         init_mp_options_for_scenario(numplayers);
+     }
+ 
+@@ -4889,7 +5044,13 @@ void interface_menu0E_mpoptions(void)
+     viSetZRange(100.0f, 10000.0f);
+     viSetUseZBuf(0);
+ 
+-    if (joyGetControllerCount() < 2)
++    if (joyGetControllerCount() <
++#ifdef GE_PORT_NATIVE
++        1
++#else
++        2
++#endif
++        )
+     {
+         frontChangeMenu(MENU_MODE_SELECT, 0);
+         setCursorPOSforMode(gamemode);
+@@ -5042,6 +5203,10 @@ void interface_menu0E_mpoptions(void)
+ 
+     if (tab_start_selected)
+     {
++#ifdef GE_PORT_NATIVE
++        if (!mpSimulantsCanStart(selected_num_players, joyGetControllerCount()))
++            return;
++#endif
+         if (multi_stage_setups[MP_stage_selected].stage_id < 0)
+         {
+             s32 temp_hi;
+@@ -5055,6 +5220,12 @@ void interface_menu0E_mpoptions(void)
+         {
+             selected_stage = multi_stage_setups[MP_stage_selected].stage_id;
+         }
++#ifdef GE_PORT_NATIVE
++        if (mpSimulantsGetCount() && selected_stage != LEVELID_FACILITY) {
++            selected_stage = LEVELID_FACILITY;
++            MP_stage_selected = MP_STAGE_FACILITY;
++        }
++#endif
+ 
+         briefingpage = -1;
+         frontChangeMenu(MENU_RUN_STAGE, 1);
+@@ -5064,6 +5235,9 @@ void interface_menu0E_mpoptions(void)
+ 
+     if (players_selected)
+     {
++#ifdef GE_PORT_NATIVE
++        frontChangeMenu(MENU_MP_SIMULANTS, 0);
++#else
+         s32 tmpNumPlayers;
+ 
+         if (joyGetControllerCount() < selected_num_players + 1)
+@@ -5076,6 +5250,7 @@ void interface_menu0E_mpoptions(void)
+         }
+ 
+         init_mp_options_for_scenario(tmpNumPlayers);
++#endif
+ 
+         return;
+     }
+@@ -5125,7 +5300,7 @@ Gfx * constructor_menu0E_mpoptions(Gfx *DL)
+ {
+     u8 *text;
+ 
+-    char acStack12 [8];
++    char acStack12 [32];
+ 
+     s32 x;
+     s32 y;
+@@ -5271,7 +5446,12 @@ Gfx * constructor_menu0E_mpoptions(Gfx *DL)
+   }
+   DL = frontPrintText(DL,&x,&y,text,ptrFontZurichBoldChars,ptrFontZurichBold,entry,viGetX(),viGetY(),0,0);
+ 
+-  sprintf(acStack12,"%d",selected_num_players);
++  #ifdef GE_PORT_NATIVE
++  if (mpSimulantsGetCount())
++    sprintf(acStack12,"%d + %d SIM",selected_num_players,mpSimulantsGetCount());
++  else
++  #endif
++    sprintf(acStack12,"%d",selected_num_players);
+   x = 0xa0;
+   y = 0x79;
+   DL = frontPrintText(DL, &x, &y, acStack12, ptrFontZurichBoldChars, ptrFontZurichBold, 0xff, viGetX(), viGetY(), 0, 0);
+@@ -6736,8 +6916,20 @@ void interface_menu13_mpscenario(void)
+             {
+                 if (
+                     (s32)cursor_v_pos  >=  (0x83 + (-i * -0x16))
+-                    && (mp_player_counts[i].min <= get_selected_num_players())
+-                    && (get_selected_num_players() <= mp_player_counts[i].max))
++                    && (mp_player_counts[i].min <= get_selected_num_players()
++#ifdef GE_PORT_NATIVE
++                        + mpSimulantsGetCount()
++#endif
++                        )
++                    && (get_selected_num_players()
++#ifdef GE_PORT_NATIVE
++                        + mpSimulantsGetCount()
++#endif
++                        <= mp_player_counts[i].max)
++#ifdef GE_PORT_NATIVE
++                    && (!mpSimulantsGetCount() || i == SCENARIO_NORMAL)
++#endif
++                    )
+                 {
+                     dword_CODE_bss_80069780 = i + 1;
+                     break;
+@@ -6831,7 +7023,19 @@ Gfx * constructor_menu13_mpscenario(Gfx *DL)
+     {
+         var_s3 = 0xff;
+ 
+-        if (((s32) mp_player_counts[i].max < get_selected_num_players()) || (get_selected_num_players() < (s32) mp_player_counts[i].min))
++        if (((s32) mp_player_counts[i].max < get_selected_num_players()
++#ifdef GE_PORT_NATIVE
++              + mpSimulantsGetCount()
++#endif
++             ) || (get_selected_num_players()
++#ifdef GE_PORT_NATIVE
++                    + mpSimulantsGetCount()
++#endif
++                    < (s32) mp_player_counts[i].min)
++#ifdef GE_PORT_NATIVE
++            || (mpSimulantsGetCount() && i != SCENARIO_NORMAL)
++#endif
++           )
+         {
+             var_s3 = 0x70;
+         }
+@@ -9259,6 +9463,9 @@ void menu_init(void)
+             case MENU_MISSION_FAILED:         update_menu0C_missionfailed();        break;
+             case MENU_MISSION_COMPLETE:       update_menu0D_missioncomplete();      break;
+             case MENU_MP_OPTIONS:             update_menu0E_mpoptions();            break;
++#ifdef GE_PORT_NATIVE
++            case MENU_MP_SIMULANTS:           break;
++#endif
+             case MENU_MP_SCENARIO_SELECT:     update_menu13_mpscenario();           break;
+             case MENU_MP_CHAR_SELECT:         update_menu0F_mpcharsel();            break;
+             case MENU_MP_TEAMS:               update_menu14_mpteams();              break;
+@@ -9300,6 +9507,9 @@ void menu_init(void)
+             case MENU_MISSION_FAILED:         init_menu0C_missionfailed();          break;
+             case MENU_MISSION_COMPLETE:       init_menu0D_missioncomplete();        break;
+             case MENU_MP_OPTIONS:             init_menu0E_mpoptions();              break;
++#ifdef GE_PORT_NATIVE
++            case MENU_MP_SIMULANTS:           init_mp_simulants();                  break;
++#endif
+             case MENU_MP_SCENARIO_SELECT:     init_menu13_mpscenariosel();          break;
+             case MENU_MP_CHAR_SELECT:         init_menu0f_mpcharsel();              break;
+             case MENU_MP_TEAMS:               init_menu14_mpteamsel();              break;
+@@ -9330,6 +9540,9 @@ void menu_init(void)
+         case MENU_MISSION_FAILED:         interface_menu0C_missionfailed();         break;
+         case MENU_MISSION_COMPLETE:       interface_menu0D_missioncomplete();       break;
+         case MENU_MP_OPTIONS:             interface_menu0E_mpoptions();             break;
++#ifdef GE_PORT_NATIVE
++        case MENU_MP_SIMULANTS:           interface_mp_simulants();                 break;
++#endif
+         case MENU_MP_SCENARIO_SELECT:     interface_menu13_mpscenario();            break;
+         case MENU_MP_CHAR_SELECT:         interface_menu0F_mpcharsel();             break;
+         case MENU_MP_TEAMS:               interface_menu14_mpteams();               break;
+@@ -9414,6 +9627,11 @@ Gfx * menu_jump_constructor_handler(Gfx *DL)
+         case MENU_MP_OPTIONS:
+             DL = constructor_menu0E_mpoptions(DL);
+             break;
++#ifdef GE_PORT_NATIVE
++        case MENU_MP_SIMULANTS:
++            DL = constructor_mp_simulants(DL);
++            break;
++#endif
+         case MENU_MP_SCENARIO_SELECT:
+             DL = constructor_menu13_mpscenario(DL);
+             break;
+@@ -9447,5 +9665,3 @@ Gfx * menu_jump_constructor_handler(Gfx *DL)
+ 
+     return DL;
+ }
+-
+-
+diff --git a/src/game/gunfire.c b/src/game/gunfire.c
+index 8f0beb0..0332048 100644
+--- a/src/game/gunfire.c
++++ b/src/game/gunfire.c
+@@ -36,6 +36,9 @@
+ #include "bondinv.h"
+ #include "stan.h"
+ #include "gbi_extension.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#endif
+ 
+ /* ==================== GETV_GUN_DEBUG (tvOS port diagnostic) ====================
+  * Env-gated. GETV_GUN_DEBUG=1 -> one status line whenever anything changes plus a
+@@ -1750,7 +1753,11 @@ void gunCreateBeamForHand(enum GUNHAND hand)
+ 
+     CapBeamLengthAndDecideIfRendered(weapon_beam, getCurrentPlayerWeaponId(hand), &hand_ptr->field_B58, &hand_ptr->item_related);
+ 
+-    if ((g_CurrentPlayer->prop->chr == NULL) || (getPlayerCount() < 2)) 
++    if ((g_CurrentPlayer->prop->chr == NULL) || (getPlayerCount() < 2
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        ))
+     { 
+         return; 
+     }
+@@ -3888,7 +3895,11 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+             case ITEM_PITONGUN:
+                 if (handptr->field_88C == 0)
+                 {
+-                    if ((getPlayerCount() == 1) || ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0)))
++                    if ((getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                         && !mpSimulantsIsMatch()
++#endif
++                        ) || ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0)))
+                     {
+                         handptr->field_87D = 1;
+                     }
+@@ -3920,7 +3931,8 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+                 {
+                     if (gePortAutoFireDue(handptr, bondwalkItemGetAutomaticFiringRate(var_s1)))
+                     {
+-                        if ((getPlayerCount() == 1) || ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0)))
++                        if (((getPlayerCount() == 1 && !mpSimulantsIsMatch())) ||
++                            ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0)))
+                         {
+                             handptr->field_87D = 1;
+                         }
+@@ -4008,7 +4020,11 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+                     sp1B4 = 1;
+                 }
+ 
+-                if ((getPlayerCount() == 1) || ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0)))
++                if ((getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                     && !mpSimulantsIsMatch()
++#endif
++                    ) || ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0)))
+                 {
+                     if (sp1B4 != 0)
+                     {
+@@ -4058,7 +4074,11 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+             handptr->field_890 = 0;
+             handptr->field_88C = 0;
+ 
+-            if ((getPlayerCount() == 1)
++            if ((getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                 && !mpSimulantsIsMatch()
++#endif
++                )
+ #if defined(VERSION_JP) || defined(VERSION_EU)
+                 || ((checkGamePaused() == 0) && (g_CurrentPlayer->mpmenuon == 0))
+ #else
+@@ -4269,14 +4289,22 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+     sp188 = WHEN_5_SP188_INIT;
+     if (handptr->weapon_action_state == GUN_ANIM_STATE_SWITCH_LOWER)
+     {
+-        if (getPlayerCount() >= 2)
++        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++            || mpSimulantsIsMatch()
++#endif
++            )
+         {
+             sp188 = WHEN_5_SP188_MULTI;
+         }
+ 
+         if (handptr->field_88C == 0)
+         {
+-            if (getPlayerCount() == 1)
++            if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                && !mpSimulantsIsMatch()
++#endif
++                )
+             {
+                 handptr->field_8B0 = WHEN_5_FLD8B0_SP;
+             }
+@@ -4291,7 +4319,11 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+             g_CurrentPlayer->ammoheldarr[get_ammo_type_for_weapon(var_s1)] += handptr->weapon_ammo_in_magazine;
+             handptr->weapon_ammo_in_magazine = 0;
+ 
+-            if (getPlayerCount() >= 2)
++            if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                || mpSimulantsIsMatch()
++#endif
++                )
+             {
+                 sub_GAME_7F09B368(hand);
+             }
+@@ -4378,14 +4410,22 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+     {
+         sp178 = WHEN_8_SP178_INIT;
+ 
+-        if (getPlayerCount() >= 2)
++        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++            || mpSimulantsIsMatch()
++#endif
++            )
+         {
+             sp178 = WHEN_8_SP178_MULTI;
+         }
+ 
+         if (handptr->field_88C == 0)
+         {
+-            if (getPlayerCount() >= 2)
++            if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                || mpSimulantsIsMatch()
++#endif
++                )
+             {
+                 sub_GAME_7F09B398(hand);
+             }
+@@ -4714,7 +4754,11 @@ void gunTickHandState(enum GUNHAND hand, s32 triggerOn)
+     {
+         if ((handptr->field_88C == 0) && (var_s1 < 0x21))
+         {
+-            if (getPlayerCount() >= 2)
++            if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                || mpSimulantsIsMatch()
++#endif
++                )
+             {
+                 sub_GAME_7F09B398(hand);
+             }
+@@ -5905,7 +5949,11 @@ void sub_GAME_7F068508(GUNHAND handnum, f32 floor_y_pos)
+     cartridge_header = get_ptr_item_statistics(weaponid)->ptr_cartridge_struct;
+  
+     // Do not create ejected casings in multiplayer.
+-    if ((cartridge_header == NULL) || (getPlayerCount() >= 2))
++    if ((cartridge_header == NULL) || (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++        || mpSimulantsIsMatch()
++#endif
++        ))
+     {
+         return;
+     }
+@@ -6222,7 +6270,11 @@ void sub_GAME_7F068508(GUNHAND handnum, f32 floor_y_pos)
+     cartridge_header = get_ptr_item_statistics(weaponid)->ptr_cartridge_struct;
+  
+     // Do not create ejected casings in multiplayer.
+-    if ((cartridge_header == NULL) || (getPlayerCount() >= 2))
++    if ((cartridge_header == NULL) || (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++        || mpSimulantsIsMatch()
++#endif
++        ))
+     {
+         return;
+     }
+@@ -7272,7 +7324,11 @@ void increment_num_kills_display_text_in_MP(void)
+     g_playerPerm->kill_count += 1;
+     g_CurrentPlayer->kills_this_life += 1;
+ 
+-    if (getPlayerCount() < 2) { return; }
++    if (getPlayerCount() < 2
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        ) { return; }
+ 
+     mission_time = getMissiontimer();
+     sprintf(&buffer, aSD, langGet(getStringID(LGUN, GUN_STR_DA_KILLCOUNT)), g_playerPerm->kill_count); // "kill count"
+@@ -7340,9 +7396,13 @@ s32 get_times_killed_mwtgx(void) {
+ 
+ void increment_num_deaths(void)
+ {
+-	char buffer[256];
++    char buffer[256];
+     g_CurrentPlayer->deathcount = (s32) (g_CurrentPlayer->deathcount + 1);
+-    if (getPlayerCount() >= 2)
++    if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++        || mpSimulantsIsMatch()
++#endif
++        )
+     {
+         if (g_CurrentPlayer->deathcount == 1)
+         {
+@@ -7372,7 +7432,11 @@ void increment_num_suicides_display_MP(void) {
+     s32 currentTime;
+ 
+     g_CurrentPlayer->num_suicides += 1;
+-    if (getPlayerCount() >= 2) {
++    if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++        || mpSimulantsIsMatch()
++#endif
++        ) {
+ 
+         currentTime = getMissiontimer();
+ 
+diff --git a/src/game/lv.c b/src/game/lv.c
+index 8314a50..441c1cd 100644
+--- a/src/game/lv.c
++++ b/src/game/lv.c
+@@ -9,6 +9,11 @@ extern int gePortReloadPressed(void);
+ extern int gePortUseAlsoReloads(void);
+ #endif
+ #include <math.h>
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#include "mp_roster.h"
++#include "simulant_probe.h"
++#endif
+ #include <os_extension.h>
+ #include <PR/libaudio.h>
+ #include <assets/font_dl.h>
+@@ -465,7 +470,11 @@ void lvlStageLoad(s32 stage)
+             s32 s3;
+             player_data = (struct player_data *)&g_playerPlayerData[i];
+ 
+-            if (getPlayerCount() == 1)
++            if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++                && !mpSimulantsIsMatch()
++#endif
++                )
+             {
+                 // s4 variable
+                 player_data->autoaim = 0;
+@@ -1249,6 +1258,9 @@ void lvlManageMpGame(void)
+ #endif
+ #endif
+     g_GlobalTimer += g_ClockTimer;
++#ifdef GE_PORT_NATIVE
++    simulantProbePoll();
++#endif
+     if ((g_CurrentStageToLoad != LEVELID_TITLE) && (D_80048394 == 0) && (g_ClockTimer > 0))
+     {
+         if (g_AppendCheatSinglePlayer != 0)
+@@ -1264,7 +1276,11 @@ void lvlManageMpGame(void)
+         }
+     }
+ 
+-    if ((getPlayerCount() >= 2) && (g_CurrentStageToLoad != LEVELID_TITLE))
++    if ((getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++         || mpSimulantsIsMatch()
++#endif
++        ) && (g_CurrentStageToLoad != LEVELID_TITLE))
+     {
+         if (get_mission_state() == MISSION_STATE_6)
+         {
+@@ -1413,12 +1429,16 @@ void lvlManageMpGame(void)
+             s32 mp_players_over_point_limit;
+ 
+             var_player_count1 = getPlayerCount();
++#ifdef GE_PORT_NATIVE
++            if (mpRosterCount() > var_player_count1)
++                var_player_count1 = mpRosterCount();
++#endif
+             mp_player_currently_in_dying_animation = 0;
+             mp_players_over_point_limit = 0;
+ 
+             for (i = 0; i < var_player_count1; i++)
+             {
+-                if (g_playerPointers[i]->bonddead != FALSE &&
++                if (i < getPlayerCount() && g_playerPointers[i]->bonddead != FALSE &&
+                     (g_playerPointers[i]->redbloodfinished == FALSE || g_playerPointers[i]->deathanimfinished == FALSE || g_playerPointers[i]->colourfadetimemax60 >= 0.0f))
+                 {
+                     mp_player_currently_in_dying_animation++;
+@@ -2041,5 +2061,3 @@ f32 lvlGetPowerOnTimeSec(void)
+ {
+     return g_PowerOnTimeSec;
+ }
+-
+-
+diff --git a/src/game/mpmenu.c b/src/game/mpmenu.c
+index edd0bd8..14d8a3b 100644
+--- a/src/game/mpmenu.c
++++ b/src/game/mpmenu.c
+@@ -21,6 +21,10 @@
+ #include "mp_music.h"
+ #include "file.h"
+ #include "assets/obseg/text/LmpmenuE.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_roster.h"
++#include "mp_simulants.h"
++#endif
+ 
+ #ifdef REFRESH_PAL
+ #define MPMENU_YOFF 8   /* PAL: every text row sits 8 pixels lower */
+@@ -311,7 +315,11 @@ void pauseAndLockControls(void)
+ 
+ bool disablePlayerActionsWhenPausedOrInMpMenu(void)
+ {
+-    if (getPlayerCount() == 1)
++    if (getPlayerCount() == 1
++#ifdef GE_PORT_NATIVE
++        && !mpSimulantsIsMatch()
++#endif
++        )
+     {
+         return TRUE;
+     }
+@@ -347,7 +355,11 @@ void mpCalculateAwards(bool gameoverdelay)
+     s32 prev_player_num;
+     s32 duration;
+ 
++#ifdef GE_PORT_NATIVE
++    struct AwardMetrics metrics[4] = {0};
++#else
+     struct AwardMetrics metrics[4];
++#endif
+ 
+     player_count = getPlayerCount();
+     duration = getMissiontimer();
+@@ -399,7 +411,11 @@ void mpCalculateAwards(bool gameoverdelay)
+         metrics[i].num_deaths = 0;
+         metrics[i].num_suicides = 0;
+ 
+-        for (j = 0; j < get_selected_num_players(); j++)
++        for (j = 0; j < get_selected_num_players()
++#ifdef GE_PORT_NATIVE
++             + mpSimulantsGetCount()
++#endif
++             ; j++)
+         {
+             metrics[i].num_deaths += g_playerPlayerData[j].kill_counts[i];
+             if (i == j)
+@@ -638,7 +654,11 @@ void mpwatchMenuTick(void)
+         }
+     }
+ 
+-    if (player_count != 1)
++    if (player_count != 1
++#ifdef GE_PORT_NATIVE
++        || mpSimulantsIsMatch()
++#endif
++        )
+     {
+         // If a player has their pause menu up when they die and the game isn't over, turn their menu off. 
+         if ((g_CurrentPlayer->bonddead) && (!g_gameOverFlag))
+@@ -883,6 +903,9 @@ s32 get_points_for_mp_player(s32 playernum)
+     team_or_token = g_playerPlayerData[playernum].have_token_or_goldengun;
+ 
+     player_count = getPlayerCount();
++#ifdef GE_PORT_NATIVE
++    if (mpRosterCount() > player_count) player_count = mpRosterCount();
++#endif
+ 
+     points = 0;
+ 
+@@ -956,6 +979,9 @@ void write_playerrank_to_buffer(char *buffer, s32 playernum)
+ 
+     scenario = get_scenario();
+     count = getPlayerCount();
++#ifdef GE_PORT_NATIVE
++    if (mpRosterCount() > count) count = mpRosterCount();
++#endif
+ 
+     for (i = 0; i < count; i++)
+     {
+@@ -1140,6 +1166,9 @@ Gfx *mp_watch_menu_display(Gfx *gdl)
+  
+     curplayernum = get_cur_playernum();
+     player_count = getPlayerCount();
++#ifdef GE_PORT_NATIVE
++    if (mpRosterCount() > player_count) player_count = mpRosterCount();
++#endif
+     self_paused = 0;
+  
+     if (player_count == 1)
+@@ -1377,6 +1406,14 @@ Gfx *mp_watch_menu_display(Gfx *gdl)
+                     curplayernum == 1 ? (colour = current_colour) : (q = g_playerPlayerData[1].have_token_or_goldengun == g_playerPlayerData[curplayernum].have_token_or_goldengun ? same_team_colour : other_team_colour, colour = q);
+ 
+                     gdl = display_text_for_playerdata_on_MP_menu(gdl, (viewleft + two_player_x_offset) + 80, x2 + (86 + MPMENU_YOFF), scores[1], colour);
++#ifdef GE_PORT_NATIVE
++                    if (getPlayerCount() == 1 && mpRosterCount() == 2) {
++                        x = viewleft + two_player_x_offset + 93;
++                        y = x2 + 86 + MPMENU_YOFF;
++                        gdl = textRender(gdl, &x, &y, "SIM", ptrFontBankGothicChars,
++                                         ptrFontBankGothic, 0x00ff00b0, viGetX(), viGetY(), 0, 0);
++                    }
++#endif
+                 }
+                 else
+                 {
+diff --git a/src/game/prop.c b/src/game/prop.c
+index 585427e..911f6e7 100644
+--- a/src/game/prop.c
++++ b/src/game/prop.c
+@@ -28,6 +28,9 @@
+ #include "stan.h"
+ #include "model.h"
+ #include "token.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_simulants.h"
++#endif
+ 
+ /**
+  * EU .bss 0x80068480
+@@ -269,7 +272,11 @@ void domakedefaultobj(s32 arg0, ObjectRecord *arg1, s32 cmdindex)
+ 
+     arg1->damage = *(s32*)&arg1->damage / 65536.0f;
+ 
+-    if (getPlayerCount() >= 2)
++    if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++        || mpSimulantsIsMatch()
++#endif
++        )
+     {
+         sp74 = 1;
+ 
+@@ -683,7 +690,11 @@ void weaponAssignToHome(s32 arg0, WeaponObjRecord* weapon, s32 cmdindex)
+         hastoken = 1;
+         giveweapon = 1;
+ 
+-        if (getPlayerCount() >= 2)
++        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++            || mpSimulantsIsMatch()
++#endif
++            )
+         {
+             lastmpweaponnum = -1;
+ 
+@@ -985,7 +996,11 @@ void setupSingleMonitor(s32 stageID, MonitorObjRecord *monitor, s32 cmdindex)
+         scale = monitor->extrascale * (1.0f / 256.0f);
+         monitor->damage = *(s32*)&monitor->damage / M_U16_MAX_VALUE_F;
+ 
+-        if (getPlayerCount() >= 2)
++        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++            || mpSimulantsIsMatch()
++#endif
++            )
+         {
+             monitor->state |= PROPSTATE_RESPAWN;
+         }
+@@ -1508,7 +1523,7 @@ void proplvreset2(enum LEVELID stageId)
+          * There are no slots for the mp stages in setup_text_pointers. The name is created
+          * by adding "mp_" after the "U" e.g. "Ump_setuparchZ"
+          */
+-        if (getPlayerCount() >= 2)
++        if (getPlayerCount() >= 2 || mpSimulantsIsMatch())
+         {
+ #ifdef GE_PORT_NATIVE
+             /* Under GETV_COOP the extra players share the single-player mission, so the
+@@ -1913,9 +1928,17 @@ void proplvreset2(enum LEVELID stageId)
+              * - don't load on 4 players
+              * - don't load in multiplayer
+              */
+-            if (getPlayerCount() >= 2)
++            if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                || mpSimulantsIsMatch()
++#endif
++                )
+             {
+-                flags |= 1 << (getPlayerCount() + 20);
++                flags |= 1 << (getPlayerCount()
++#ifdef GE_PORT_NATIVE
++                    + mpSimulantsGetCount()
++#endif
++                    + 20);
+             }
+ 
+             phead = g_CurrentSetup.propDefs;
+@@ -2070,7 +2093,11 @@ void proplvreset2(enum LEVELID stageId)
+                         s32 ammoqty = 1;
+                         s32 i9;
+ 
+-                        if (getPlayerCount() >= 2)
++                        if (getPlayerCount() >= 2
++#ifdef GE_PORT_NATIVE
++                            || mpSimulantsIsMatch()
++#endif
++                            )
+                         {
+                             struct s_mp_weapon_set *mpweapon = &getPtrMPWeaponSetData()[lastmpweaponnum];
+                             
+diff --git a/src/game/radar.c b/src/game/radar.c
+index c366cfb..0ca58cc 100644
+--- a/src/game/radar.c
++++ b/src/game/radar.c
+@@ -6,6 +6,10 @@
+ #include "player.h"
+ #include "othermodemicrocode.h"
+ #include "image_bank.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_roster.h"
++#include "simulant_probe.h"
++#endif
+ 
+ 
+ /**
+@@ -52,6 +56,9 @@ Gfx *display_red_blue_on_radar(Gfx *DL)
+     current_scenario = get_scenario();
+     cur_playernum = get_cur_playernum();
+     player_count = getPlayerCount();
++#ifdef GE_PORT_NATIVE
++    if (mpRosterCount() > player_count) player_count = mpRosterCount();
++#endif
+     
+     if (player_count == 1)
+     {
+@@ -123,10 +130,21 @@ Gfx *display_red_blue_on_radar(Gfx *DL)
+     {
+         if (i != cur_playernum)
+         {
+-            if (g_playerPointers[i]->bonddead == FALSE)
++            if (
++#ifdef GE_PORT_NATIVE
++                (i >= getPlayerCount() && simulantProbeGetProp()) ||
++                (i < getPlayerCount() && g_playerPointers[i]->bonddead == FALSE)
++#else
++                g_playerPointers[i]->bonddead == FALSE
++#endif
++               )
+             {
+                 f32 tt1;
++#ifdef GE_PORT_NATIVE
++                other_player_prop = i < getPlayerCount() ? g_playerPointers[i]->prop : simulantProbeGetProp();
++#else
+                 other_player_prop = g_playerPointers[i]->prop;
++#endif
+                 player_prop = g_CurrentPlayer->prop;
+ 
+                 temp_f20 = other_player_prop->pos.f[0] - player_prop->pos.f[0];
+diff --git a/src/game/mp_combat.c b/src/game/mp_combat.c
+new file mode 100644
+index 0000000..3f90dd6
+--- /dev/null
++++ b/src/game/mp_combat.c
+@@ -0,0 +1,163 @@
++/* Adapted from birdturtle/goldeneye-pc-port at 7440ab16 (MIT).
++ * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
++#include "mp_combat.h"
++#include "mp_roster.h"
++#include "bondview.h"
++#include "bondinv.h"
++#include "chrobjdata.h"
++#include "front.h"
++#include "glass.h"
++#include "gun.h"
++#include "lv.h"
++#include "mpmenu.h"
++#include "player.h"
++#include "propobj.h"
++#include <stdio.h>
++#define sysLogPrintf(level, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0)
++#include "joy.h"
++
++extern void increment_num_deaths(void);
++extern void bondviewKillCurrentPlayer(void);
++
++typedef struct MpCombatLife {
++    MpRosterRef life;
++    MpRosterRef attacker;
++    int credited;
++} MpCombatLife;
++
++static MpCombatLife s_lives[MP_ROSTER_MAX];
++
++static int mpCombatSameRef(MpRosterRef a, MpRosterRef b)
++{
++    return a.slot == b.slot && a.generation == b.generation &&
++           a.incarnation == b.incarnation && a.generation != 0;
++}
++
++static int mpCombatValidActor(MpCombatLife *state, int slot)
++{
++    return mpRosterResolve(state->life) == slot &&
++           mpCombatSameRef(state->life, mpRosterRefForSlot(slot));
++}
++
++void mpCombatSpawnSimulant(int slot, struct ChrRecord *chr)
++{
++    const MpRosterEntry *entry = mpRosterEntry(slot);
++    if (!chr || !entry || entry->kind != MP_ROSTER_SIMULANT ||
++        entry->chrnum != chr->chrnum) return;
++    s_lives[slot].life = mpRosterRefForSlot(slot);
++    s_lives[slot].attacker = (MpRosterRef){0, 0, -1};
++    s_lives[slot].credited = 0;
++    /* Character damage is in eighths of a player's normalized health.
++     * Ignore campaign difficulty/007 modifiers in a multiplayer match. */
++    chr->maxdamage = MP_COMBAT_ACTOR_HEALTH;
++    chr->damage = 0.0f;
++}
++
++void mpCombatNoteSimulantHit(struct ChrRecord *chr, int human_index)
++{
++    int slot;
++    MpCombatLife *state;
++    int attacker = mpRosterSlotForHuman(human_index);
++    if (!chr || (slot = mpRosterSlotForChr(chr->chrnum)) < 0) return;
++    state = &s_lives[slot];
++    if (!mpCombatValidActor(state, slot) || state->credited) return;
++    state->attacker = attacker >= 0 ? mpRosterRefForSlot(attacker) :
++                                   (MpRosterRef){0, 0, -1};
++}
++
++/* Human MP damage does not route through the guard's ACT_ARGH stagger.
++ * Keep a living Simulant's current movement/attack action on weapon hits,
++ * while allowing a fatal hit to reach the native character death action. */
++int mpCombatSimulantKeepsMoving(struct ChrRecord *chr)
++{
++    int slot;
++    if (!chr || (slot = mpRosterSlotForChr(chr->chrnum)) < 0) return 0;
++    return mpCombatValidActor(&s_lives[slot], slot) &&
++           chr->damage < chr->maxdamage;
++}
++
++int mpCombatShouldCountNativeKill(struct ChrRecord *chr)
++{
++    int slot;
++    if (!chr || (slot = mpRosterSlotForChr(chr->chrnum)) < 0) return 1;
++    return mpCombatValidActor(&s_lives[slot], slot) &&
++           mpRosterResolve(s_lives[slot].attacker) >= 0;
++}
++
++void mpCombatSimulantDied(int slot, struct ChrRecord *chr)
++{
++    MpCombatLife *state;
++    int attacker;
++    const MpRosterEntry *entry = mpRosterEntry(slot);
++    if (!chr || !entry || entry->kind != MP_ROSTER_SIMULANT ||
++        entry->chrnum != chr->chrnum) return;
++    state = &s_lives[slot];
++    if (!mpCombatValidActor(state, slot) || state->credited) return;
++    state->credited = 1;
++    attacker = mpRosterResolve(state->attacker);
++    if (attacker >= 0 && attacker != slot)
++        g_playerPlayerData[attacker].kill_counts[slot]++;
++}
++
++/* The N64 record_damage_kills path treats an attacker index as a real
++ * struct player and switches g_CurrentPlayer to it. A Simulant has no such
++ * object. Keep the native human health, armor and death presentation, then
++ * credit the stage roster without inventing a viewport or controller. */
++void mpCombatDamageHuman(int attacker_slot, int victim_human, float amount,
++                         float dx, float dz)
++{
++    int previous = get_cur_playernum();
++    int victim = mpRosterSlotForHuman(victim_human);
++    const MpRosterEntry *attacker = mpRosterEntry(attacker_slot);
++    struct player *player;
++    float damage;
++    if (!attacker || attacker->kind != MP_ROSTER_SIMULANT ||
++        mpRosterResolve(mpRosterRefForSlot(attacker_slot)) != attacker_slot ||
++        victim < 0 || victim >= getPlayerCount() || !g_playerPointers[victim] ||
++        g_stopPlayFlag || g_gameOverFlag) return;
++
++    set_cur_player(victim_human);
++    player = g_CurrentPlayer;
++    if (player->watch_animation_state != WATCH_ANIMATION_0x0) {
++        hudMakeDamageSegments(&player->armor_display_values[0].items[0], 0x2e, 1,
++                              currentPlayerGetArmor());
++        hudMakeDamageSegments(&player->health_display_values[0].items[0], 0x2e, -1,
++                              currentPlayerGetHealth());
++    }
++    if (!player->bonddead && !player->cheatBondInvincible && !g_PlayerInvincible &&
++        player->watch_animation_state != WATCH_ANIMATION_0x5 &&
++        player->watch_animation_state != WATCH_ANIMATION_0xc &&
++        (player->damageshowtime < 0 || player->damageshowtime == 0)) {
++        damage = g_playerPlayerData[victim].handicap * amount;
++        if (get_scenario() == SCENARIO_LTK)
++            damage = player->bondhealth * player->actual_health +
++                     player->bondarmour * player->actual_armor;
++        player->oldhealth = player->bondhealth;
++        player->oldarmour = player->bondarmour;
++        joyRumblePakStart(victim_human, 0.25f);
++        if (damage <= player->bondarmour * player->actual_armor) {
++            player->bondarmour -= damage / player->actual_armor;
++        } else {
++            damage -= player->bondarmour / player->actual_armor;
++            player->bondarmour = 0.0f;
++            player->actual_armor = 1.0f;
++            player->bondhealth -= damage / player->actual_health;
++            if (player->bondhealth <= 0.0f) {
++                drop_inventory();
++                increment_num_deaths();
++                g_playerPlayerData[attacker_slot].kill_counts[victim]++;
++                g_playerPlayerData[attacker_slot].kill_count++;
++                bondviewKillCurrentPlayer();
++                sysLogPrintf(LOG_NOTE, "simulant %d eliminated player %d",
++                             attacker_slot + 1, victim + 1);
++            }
++        }
++        if (player->damageshowtime < 0) {
++            player->bondshotspeed.x += 2.0f * dx;
++            player->bondshotspeed.z += 2.0f * dz;
++        }
++        player->damageshowtime = 0;
++        player->healthshowtime = 0;
++    }
++    set_cur_player(previous);
++}
+diff --git a/src/game/mp_combat.h b/src/game/mp_combat.h
+new file mode 100644
+index 0000000..b8618ef
+--- /dev/null
++++ b/src/game/mp_combat.h
+@@ -0,0 +1,21 @@
++/* Adapted from birdturtle/goldeneye-pc-port at 7440ab16 (MIT).
++ * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
++#ifndef GE_MP_COMBAT_H
++#define GE_MP_COMBAT_H
++
++struct ChrRecord;
++
++/* MP players have one normalized health unit. Character weapon damage is
++ * eight times the normalized player damage, so a full-health Simulant has
++ * eight actor damage units. Negative actor damage represents armor. */
++#define MP_COMBAT_ACTOR_HEALTH 8.0f
++
++void mpCombatSpawnSimulant(int slot, struct ChrRecord *chr);
++void mpCombatNoteSimulantHit(struct ChrRecord *chr, int human_index);
++int mpCombatSimulantKeepsMoving(struct ChrRecord *chr);
++int mpCombatShouldCountNativeKill(struct ChrRecord *chr);
++void mpCombatSimulantDied(int slot, struct ChrRecord *chr);
++void mpCombatDamageHuman(int attacker_slot, int victim_human, float damage,
++                         float direction_x, float direction_z);
++
++#endif
+diff --git a/src/game/mp_roster.h b/src/game/mp_roster.h
+new file mode 100644
+index 0000000..7208a04
+--- /dev/null
++++ b/src/game/mp_roster.h
+@@ -0,0 +1,50 @@
++/* Adapted from birdturtle/goldeneye-pc-port, port/include/mp_roster.h,
++ * commit 7440ab16 (MIT, Copyright 2026 James Dansereau).
++ * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
++#ifndef GE_MP_ROSTER_H
++#define GE_MP_ROSTER_H
++
++/* Match identities are limited to four. Each slot has a score-data row;
++ * only human entries own a struct player, controller, or viewport.
++ * A Simulant's chrnum is resolved in the current
++ * stage; no stage-owned character or prop pointer is retained here. */
++#define MP_ROSTER_MAX 4
++
++typedef enum MpRosterKind {
++    MP_ROSTER_EMPTY = 0,
++    MP_ROSTER_HUMAN,
++    MP_ROSTER_SIMULANT
++} MpRosterKind;
++
++typedef struct MpRosterRef {
++    unsigned generation;
++    unsigned incarnation;
++    int slot;
++} MpRosterRef;
++
++typedef struct MpRosterEntry {
++    MpRosterKind kind;
++    int human_index; /* -1 for a Simulant */
++    int chrnum;      /* -1 until a Simulant actor is present */
++    unsigned incarnation;
++} MpRosterEntry;
++
++/* A failed configuration leaves the roster inactive. Human slots always
++ * precede Simulants, and human_count + simulant_count never exceeds four. */
++int mpRosterBegin(int stage, int human_count, int simulant_count);
++void mpRosterEnd(void);
++int mpRosterStage(void);
++int mpRosterCount(void);
++int mpRosterHumanCount(void);
++const MpRosterEntry *mpRosterEntry(int slot);
++
++/* Bind a stage actor to its reserved Simulant entry. Respawning increments
++ * the incarnation, invalidating references to the old actor. */
++int mpRosterBindSimulant(int slot, int chrnum);
++void mpRosterUnbindSimulant(int slot, int chrnum);
++MpRosterRef mpRosterRefForSlot(int slot);
++int mpRosterResolve(MpRosterRef ref);
++int mpRosterSlotForHuman(int human_index);
++int mpRosterSlotForChr(int chrnum);
++
++#endif
+diff --git a/src/game/mp_simulants.h b/src/game/mp_simulants.h
+new file mode 100644
+index 0000000..bd4c937
+--- /dev/null
++++ b/src/game/mp_simulants.h
+@@ -0,0 +1,13 @@
++/* Adapted from birdturtle/goldeneye-pc-port, port/include/mp_simulants.h,
++ * commit 7440ab16 (MIT, Copyright 2026 James Dansereau).
++ * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
++#ifndef GE_MP_SIMULANTS_H
++#define GE_MP_SIMULANTS_H
++
++/* Setup configuration is separate from the stage-owned participant roster. */
++int mpSimulantsGetCount(void);
++void mpSimulantsSetCount(int humans, int count);
++int mpSimulantsIsMatch(void);
++int mpSimulantsCanStart(int humans, int inputs);
++
++#endif
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+new file mode 100644
+index 0000000..6896ab6
+--- /dev/null
++++ b/src/game/simulant_probe.c
+@@ -0,0 +1,741 @@
++/* Adapted from birdturtle/goldeneye-pc-port at 7440ab16 (MIT).
++ * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
++/* Experimental separate-character Simulant proof. Enable with
++ * GE_MP_SIM_PROBE=1; no player/controller slot is consumed. */
++#include <stdlib.h>
++#include <stdio.h>
++#include <string.h>
++#include <math.h>
++#include "random.h"
++
++#include "simulant_probe.h"
++#include "mp_roster.h"
++#include "mp_simulants.h"
++#include "mp_combat.h"
++#include "player.h"
++#include "chrobjdata.h"
++#include "chr.h"
++#include "chraction.h"
++#include "front.h"
++#include "lv.h"
++#include "bondview.h"
++#define sysLogPrintf(level, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0)
++#include "chrai.h"
++#include "mp_weapon.h"
++#include "model.h"
++#include "stan.h"
++#include "gun.h"
++#include "mpmenu.h"
++#include "propobj.h"
++#include "music.h"
++#include "snd.h"
++
++
++extern u16 get_player_mp_char_head(s32 player);
++extern u16 get_player_mp_char_body(s32 player);
++extern PropRecord *chrSpawnAtCoord(s32 body, s32 head, coord3d *pos,
++                                   StandTile *stan, f32 angle,
++                                   AIListRecord *ailist, s32 flags);
++extern waypoint *chrlvStanPathRelated(coord3d *pos, StandTile *stan);
++extern PropRecord *chrGiveWeapon(ChrRecord *chr, s32 model, ITEM_IDS item, s32 flags);
++
++/* This ID is outside the normal stage guard numbering (which starts at 5000).
++ * The slot is checked against the current stage's array before each use. */
++#define SIM_PROBE_CHRNUM 0x6fff
++#define SIM_ROUTE_REPLAN_POLLS 90
++#define SIM_ROUTE_STALL_POLLS 240
++#define SIM_FIRE_INTERVAL_POLLS 24
++#define SIM_FIRE_RANGE 1000.0f
++#define SIM_FLASH_POLLS 3
++#define SIM_RECOIL_POLLS 5
++
++typedef struct SimProbeRoute {
++    unsigned retryAfter;
++    unsigned sampleAt;
++    unsigned blockedUntil;
++    float sampleX, sampleZ;
++    int goal;
++    int blockedGoal;
++    int stalls;
++    PropRecord *weaponTarget;
++    PropRecord *blockedWeapon;
++    unsigned weaponBlockedUntil;
++    int noWeaponLogged;
++    unsigned nextShot;
++    unsigned flashUntil;
++    unsigned recoilUntil;
++} SimProbeRoute;
++
++typedef struct SimProbeRuntime {
++    int attempts;
++    unsigned polls;
++    unsigned retryAfter;
++    unsigned deathPoll;
++    int waitingForPadLogged;
++    int lastStage;
++    PadRecord *failedPads;
++    SimProbeRoute route;
++} SimProbeRuntime;
++
++static SimProbeRuntime s_probe = { .lastStage = -1, .route = { .goal = -1, .blockedGoal = -1 } };
++/* One byte per body/head ID: only models used by this probe are invalidated. */
++static unsigned char s_botModelUsed[HEAD_END];
++static int s_lastBotBody = -1;
++static int s_lastBotHead = -1;
++extern stagesetup UsetuparkZ;
++static waypoint *s_navWaypoints;
++static int s_navCount;
++static waypoint *s_originalWaypoints;
++static waygroup *s_originalGroups;
++static int s_readyStage = -1;
++
++static int simProbeEnabled(void)
++{
++    const char *value = getenv("GE_MP_SIM_PROBE");
++    return mpSimulantsGetCount() > 0 ||
++           (value && value[0] == '1' && value[1] == '\0');
++}
++
++PropRecord *simulantProbeGetProp(void)
++{
++    if (mpRosterSlotForChr(SIM_PROBE_CHRNUM) < 0 || !g_ChrSlots) return NULL;
++    for (int i = 0; i < g_NumChrSlots; ++i) {
++        ChrRecord *chr = &g_ChrSlots[i];
++        if (chr->model && chr->chrnum == SIM_PROBE_CHRNUM &&
++            chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD)
++            return chr->prop;
++    }
++    return NULL;
++}
++
++static int simProbeRosterTrace(void)
++{
++    const char *value = getenv("GE_MP_ROSTER_TRACE");
++    return value && value[0] == '1' && value[1] == '\0';
++}
++
++void simulantProbeStageReady(int stage)
++{
++    s_readyStage = stage;
++    /* Human player data and viewports already exist. Reserve a match slot
++     * for the probe only if it fits beside them; the actor is bound on spawn. */
++    if (gamemode == GAMEMODE_MULTI && getPlayerCount() > 0) {
++        int humans = getPlayerCount();
++        int bots = simProbeEnabled() && humans < MP_ROSTER_MAX ? 1 : 0;
++        mpRosterBegin(stage, humans, bots);
++    } else {
++        mpRosterEnd();
++    }
++    if (simProbeRosterTrace() && mpRosterStage() == stage)
++        sysLogPrintf(LOG_NOTE, "sim roster: stage %d humans=%d simulants=%d total=%d",
++                     stage, mpRosterHumanCount(),
++                     mpRosterCount() - mpRosterHumanCount(), mpRosterCount());
++    if (getenv("GE_D86")) {
++        fprintf(stderr, "[D86] sim probe stage ready stage=%d\n", stage);
++        fflush(stderr);
++    }
++}
++
++static void simProbeResetRoute(SimProbeRoute *route)
++{
++    memset(route, 0, sizeof(*route));
++    route->goal = route->blockedGoal = -1;
++}
++
++static void simProbeResetRuntime(void)
++{
++    /* Includes route weapon/target props and the failed Facility pads.
++     * Chr, held weapon, player target, STAN and waypoint pointers are
++     * obtained inside each poll and never cached beyond that call. */
++    memset(&s_probe, 0, sizeof(s_probe));
++    s_probe.lastStage = -1;
++    simProbeResetRoute(&s_probe.route);
++}
++
++static void simProbeLogModel(const char *event, int body, int head, int id)
++{
++    static int d86 = -1;
++    if (d86 < 0) d86 = getenv("GE_D86") != NULL;
++    if (d86 && id >= 0 && id < HEAD_END) {
++        ModelFileHeader *header = c_item_entries[id].header;
++        fprintf(stderr,
++                "[D86] sim probe %s body=%d head=%d model=%d header=%p RootNode=%p Switches=%p Textures=%p\n",
++                event, body, head, id, (void *)header,
++                header ? (void *)header->RootNode : NULL,
++                header ? (void *)header->Switches : NULL,
++                header ? (void *)header->Textures : NULL);
++        fflush(stderr);
++    }
++}
++
++void simulantProbeStageTeardown(void)
++{
++    if (simProbeRosterTrace() && mpRosterStage() >= 0)
++        sysLogPrintf(LOG_NOTE, "sim roster: end stage %d", mpRosterStage());
++    s_readyStage = -1;
++    mpRosterEnd();
++    /* Restore the stage's own tables after character/object cleanup, before
++     * dropping the probe's route and any STAN-linked stage references. */
++    if (g_CurrentSetup.pathwaypoints == s_navWaypoints && s_originalWaypoints)
++        g_CurrentSetup.pathwaypoints = s_originalWaypoints;
++    if (g_CurrentSetup.waypointgroups == UsetuparkZ.waypointgroups && s_originalGroups)
++        g_CurrentSetup.waypointgroups = s_originalGroups;
++    s_originalWaypoints = NULL;
++    s_originalGroups = NULL;
++    s_navWaypoints = NULL;
++    s_navCount = 0;
++    for (int id = 0; id < HEAD_END; ++id) {
++        if (s_botModelUsed[id]) {
++            ModelFileHeader *header = c_item_entries[id].header;
++            simProbeLogModel("invalidate", s_lastBotBody, s_lastBotHead, id);
++            if (header) {
++                header->RootNode = NULL;
++                header->Switches = NULL;
++                header->Textures = NULL;
++                header->numRecords = 0;
++            }
++        }
++    }
++    memset(s_botModelUsed, 0, sizeof(s_botModelUsed));
++    s_lastBotBody = s_lastBotHead = -1;
++    simProbeResetRuntime();
++}
++
++/* The solo and MP Facility pad lists have identical positions and indexes.
++ * Verify the live stage before installing the original solo path tables: the
++ * MP setup's objects, spawn pads and original pads stay untouched. */
++static int simProbeInstallFacilityNav(int stage)
++{
++    if (stage != LEVELID_FACILITY && stage != LEVELID_FACILITY_MP) return 0;
++    if (g_CurrentSetup.pathwaypoints == s_navWaypoints &&
++        g_CurrentSetup.waypointgroups == UsetuparkZ.waypointgroups) return 1;
++    if (s_probe.failedPads == g_CurrentSetup.pads && s_probe.failedPads) return 0;
++    if (!g_CurrentSetup.pads || !g_CurrentSetup.pathwaypoints ||
++        !g_CurrentSetup.waypointgroups ||
++        g_CurrentSetup.pathwaypoints[0].padID >= 0 ||
++        g_CurrentSetup.waypointgroups[0].neighbours) return 0;
++
++    /* Use the already linked solo Facility graph, never copy asset-derived
++     * waypoints into the port. The MP setup intentionally lacks paths.
++     * Validate the matching pad order and live STAN links before borrowing it. */
++    if (!UsetuparkZ.pads || !UsetuparkZ.pathwaypoints ||
++        !UsetuparkZ.waypointgroups) return 0;
++    int padCount = 0;
++    while (padCount < 1024 && g_CurrentSetup.pads[padCount].plink &&
++           UsetuparkZ.pads[padCount].plink) {
++        if (strcmp(g_CurrentSetup.pads[padCount].plink,
++                   UsetuparkZ.pads[padCount].plink)) break;
++        ++padCount;
++    }
++    if (padCount >= 1024 || g_CurrentSetup.pads[padCount].plink ||
++        UsetuparkZ.pads[padCount].plink) {
++        sysLogPrintf(LOG_NOTE, "sim probe: Facility pad layout mismatch; navigation disabled");
++        s_probe.failedPads = g_CurrentSetup.pads;
++        return 0;
++    }
++    int count = 0;
++    while (count < 1024 && UsetuparkZ.pathwaypoints[count].padID >= 0) {
++        int padId = UsetuparkZ.pathwaypoints[count].padID;
++        if (padId >= padCount || !g_CurrentSetup.pads[padId].stan) {
++            sysLogPrintf(LOG_NOTE, "sim probe: waypoint %d has no MP STAN", count);
++            s_probe.failedPads = g_CurrentSetup.pads;
++            return 0;
++        }
++        ++count;
++    }
++    if (!count || count >= 1024) return 0;
++    s_navWaypoints = UsetuparkZ.pathwaypoints;
++    s_navCount = count;
++    s_originalWaypoints = g_CurrentSetup.pathwaypoints;
++    s_originalGroups = g_CurrentSetup.waypointgroups;
++    g_CurrentSetup.pathwaypoints = s_navWaypoints;
++    g_CurrentSetup.waypointgroups = UsetuparkZ.waypointgroups;
++    sysLogPrintf(LOG_NOTE, "sim probe: installed Facility navigation (%d waypoints)", s_navCount);
++    return 1;
++}
++
++/* Only stage-owned, respawning firearms from the selected MP weapon set.
++ * Dropped items and special scenario objects need their own pickup rules. */
++static int simProbeUsableWorldGun(PropRecord *prop)
++{
++    WeaponObjRecord *weapon;
++    struct s_mp_weapon_set *set;
++    if (!prop || !(prop->flags & PROPFLAG_ENABLED) ||
++        (prop->type != PROP_TYPE_OBJ && prop->type != PROP_TYPE_WEAPON) ||
++        prop->parent || prop->timetoregen > 0 || !prop->stan || !prop->obj ||
++        prop->obj->type != PROPDEF_COLLECTABLE ||
++        !(prop->obj->state & PROPSTATE_RESPAWN) ||
++        (prop->obj->runtime_bitflags & RUNTIMEBITFLAG_00000800) ||
++        (prop->obj->flags & (PROPFLAG_UNCOLLECTABLE | PROPFLAG_ASSIGNEDTOCHR | PROPFLAG_INSIDEANOTHEROBJ)))
++        return 0;
++    weapon = prop->weapon;
++    if (weapon->prop != prop || !weapon->model ||
++        weapon->weaponnum < ITEM_WPPK ||
++        (weapon->weaponnum > ITEM_RUGER && weapon->weaponnum != ITEM_LASER))
++        return 0;
++    set = getPtrMPWeaponSetData();
++    for (int i = 0; i < 8; ++i) {
++        if (set[i].allowpickup && set[i].itemID == weapon->weaponnum &&
++            set[i].propID == weapon->obj) return 1;
++    }
++    return 0;
++}
++
++/* Return true while a world gun is the navigation goal. Keep a real pickup
++ * and its respawn timer; the separate held copy uses GoldenEye's chr weapon
++ * allocation path. This does not fire or credit a shot to a player slot. */
++static int simProbeSeekWeapon(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
++{
++    PropRecord *nearest = NULL;
++    PropRecord *locked = NULL;
++    float nearestDist = 1.0e30f;
++    int seen = 0;
++    if (chrGetEquippedWeaponProp(chr, GUNRIGHT) ||
++        chrGetEquippedWeaponProp(chr, GUNLEFT)) {
++        route->weaponTarget = NULL;
++        route->noWeaponLogged = 0;
++        return 0;
++    }
++
++    for (PropRecord *prop = g_ActivePropsHead; prop && seen++ < MAX_PROPS;
++         prop = prop->next) {
++        if (!simProbeUsableWorldGun(prop) ||
++            (prop == route->blockedWeapon && polls < route->weaponBlockedUntil))
++            continue;
++        if (prop == route->weaponTarget) locked = prop;
++        float dx = prop->pos.x - chr->prop->pos.x;
++        float dy = prop->pos.y - chr->prop->pos.y;
++        float dz = prop->pos.z - chr->prop->pos.z;
++        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
++        if (dist < nearestDist) { nearestDist = dist; nearest = prop; }
++    }
++    nearest = locked ? locked : nearest;
++    if (!nearest) {
++        route->weaponTarget = NULL;
++        if (!route->noWeaponLogged) {
++            sysLogPrintf(LOG_NOTE, "sim probe: no available world firearm; pursuing unarmed");
++            route->noWeaponLogged = 1;
++        }
++        return 0;
++    }
++    route->noWeaponLogged = 0;
++
++    float dx = nearest->pos.x - chr->prop->pos.x;
++    float dy = nearest->pos.y - chr->prop->pos.y;
++    float dz = nearest->pos.z - chr->prop->pos.z;
++    if (dx * dx + dz * dz < 135.0f * 135.0f &&
++        dy * dy < 150.0f * 150.0f) {
++        WeaponObjRecord *weapon = nearest->weapon;
++        int item = weapon->weaponnum;
++        int pad = weapon->pad;
++        if (chrGiveWeapon(chr, weapon->obj, item, 0)) {
++            propExecuteTickOperation(nearest, TICKOP_FREE);
++            sysLogPrintf(LOG_NOTE, "sim probe: picked up item %d at pad %d; world pickup respawning",
++                         item, pad);
++            route->weaponTarget = NULL;
++            route->goal = -1;
++            route->retryAfter = polls + 30;
++            return 1;
++        }
++        sysLogPrintf(LOG_NOTE, "sim probe: unable to equip item %d", item);
++        route->blockedWeapon = nearest;
++        route->weaponBlockedUntil = polls + 360;
++        route->weaponTarget = NULL;
++        return 1;
++    }
++
++    if (route->weaponTarget == nearest &&
++        polls - route->sampleAt >= SIM_ROUTE_STALL_POLLS) {
++        float movedX = chr->prop->pos.x - route->sampleX;
++        float movedZ = chr->prop->pos.z - route->sampleZ;
++        if (chr->actiontype == ACT_GOPOS &&
++            movedX * movedX + movedZ * movedZ < 64.0f * 64.0f &&
++            dx * dx + dz * dz > 180.0f * 180.0f) {
++            sysLogPrintf(LOG_NOTE, "sim probe: stalled en route to weapon at pad %d",
++                         nearest->weapon->pad);
++            route->blockedWeapon = nearest;
++            route->weaponBlockedUntil = polls + 360;
++            route->weaponTarget = NULL;
++            route->retryAfter = polls + 120;
++            route->sampleAt = polls;
++            return 1;
++        }
++        route->sampleAt = polls;
++        route->sampleX = chr->prop->pos.x;
++        route->sampleZ = chr->prop->pos.z;
++    }
++
++    if (polls >= route->retryAfter &&
++        (route->weaponTarget != nearest || chr->actiontype != ACT_GOPOS)) {
++        int pad = nearest->weapon->pad;
++        int ok = chrGoToPad(chr, pad, SPEED_RUN);
++        sysLogPrintf(LOG_NOTE, "sim probe: route to weapon item %d at pad %d: %s",
++                     nearest->weapon->weaponnum, pad, ok ? "running" : "unreachable");
++        route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++        if (ok) {
++            route->weaponTarget = nearest;
++            route->goal = -1;
++            route->sampleAt = polls;
++            route->sampleX = chr->prop->pos.x;
++            route->sampleZ = chr->prop->pos.z;
++        } else {
++            route->blockedWeapon = nearest;
++            route->weaponBlockedUntil = polls + 360;
++            route->weaponTarget = NULL;
++        }
++    }
++    return 1;
++}
++
++/* A deliberately modest first engagement: no projectile or explosion paths,
++ * and a wall/closed door blocks both target acquisition and damage. */
++static void simProbeCombat(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
++{
++    PropRecord *gun = chrGetEquippedWeaponProp(chr, GUNRIGHT);
++    float nearest = SIM_FIRE_RANGE * SIM_FIRE_RANGE;
++    int victim = -1;
++    if (!gun || !gun->weapon || !chr->model || !chr->prop || !chr->prop->stan ||
++        (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return;
++    int item = gun->weapon->weaponnum;
++    if (item < ITEM_WPPK || item > ITEM_RUGER) {
++        if (route->flashUntil) chrSetFiring(chr, GUNRIGHT, 0);
++        route->flashUntil = route->recoilUntil = 0;
++        return;
++    }
++
++    /* The old one-poll pulse was too brief to reliably appear in either
++     * split-screen viewport. Keep the normal gun model's flash switch lit
++     * for a few controller polls, then clear it even if sight is lost. */
++    if (route->flashUntil && polls >= route->flashUntil) {
++        chrSetFiring(chr, GUNRIGHT, 0);
++        route->flashUntil = 0;
++    }
++
++    for (int i = 0; i < getPlayerCount() && i < 4; ++i) {
++        const struct player *player = g_playerPointers[i];
++        StandTile *tile = chr->prop->stan;
++        if (!player || !player->prop || !player->prop->stan || player->bonddead) continue;
++        float dx = player->prop->pos.x - chr->prop->pos.x;
++        float dy = player->prop->pos.y - chr->prop->pos.y;
++        float dz = player->prop->pos.z - chr->prop->pos.z;
++        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
++        if (dist >= nearest) continue;
++        chrSetMoving(chr, 0);
++        int visible = stanTestLineUnobstructed(&tile, chr->prop->pos.x,
++                           chr->prop->pos.z, player->prop->pos.x,
++                           player->prop->pos.z,
++                           CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER |
++                           CDTYPE_AIOPAQUE, chr->chrheight - 20.0f,
++                           chr->chrheight - 20.0f, 0.0f, 1.0f);
++        chrSetMoving(chr, 1);
++        if (visible && tile == player->prop->stan) { nearest = dist; victim = i; }
++    }
++    if (victim < 0) {
++        if (route->recoilUntil) {
++            chr->aimendrshoulder = 0.0f;
++            chr->aimendcount = 6;
++            route->recoilUntil = 0;
++        }
++        return;
++    }
++
++    const struct player *target = g_playerPointers[victim];
++    float dx = target->prop->pos.x - chr->prop->pos.x;
++    float dz = target->prop->pos.z - chr->prop->pos.z;
++    float dy = target->prop->pos.y - (chr->prop->pos.y + 30.0f);
++    float elevation = atan2f(dy, sqrtf(dx * dx + dz * dz));
++    if (elevation > 0.45f) elevation = 0.45f;
++    if (elevation < -0.45f) elevation = -0.45f;
++    /* chrUpdateAimProperties interpolates this target into the right-arm
++     * rotation used by chrRender. It does not change ACT_GOPOS or its route. */
++    chr->aimendrshoulder = elevation +
++                            (polls < route->recoilUntil ? 0.18f : 0.0f);
++    chr->aimendcount = 6;
++    float desired = atan2f(dx, dz);
++    float heading = getsubroty(chr->model);
++    float delta = atan2f(sinf(desired - heading), cosf(desired - heading));
++    float step = 0.075f;
++    if (delta > step) delta = step;
++    if (delta < -step) delta = -step;
++    setsubroty(chr->model, heading + delta);
++    if (fabsf(atan2f(sinf(desired - getsubroty(chr->model)),
++                     cosf(desired - getsubroty(chr->model)))) > 0.12f ||
++        polls < route->nextShot) return;
++
++    route->nextShot = polls + SIM_FIRE_INTERVAL_POLLS;
++    route->flashUntil = polls + SIM_FLASH_POLLS;
++    route->recoilUntil = polls + SIM_RECOIL_POLLS;
++    chr->aimendrshoulder = elevation + 0.18f;
++    chr->aimendcount = 2;
++    chrSetFiring(chr, GUNRIGHT, 1);
++    /* Use the same per-weapon sound ID and positional audio hook as guards.
++     * The original NPC firing routine also applies unsafe MP shot ownership,
++     * so only its feedback path is reproduced here. */
++    u16 sound = bondwalkItemGetSound(item);
++    if (sound) {
++        ALSoundState *playing = sndPlaySfx((struct ALBankAlt_s *)g_musicSfxBufferPtr,
++                                           sound, NULL);
++        if (playing) chrobjSndCreatePostEventDefault(playing, &chr->prop->pos);
++    }
++    mpCombatDamageHuman(mpRosterSlotForChr(chr->chrnum), victim,
++                        0.125f * gunItemGetDestructionAmount(item),
++                        dx / sqrtf(dx * dx + dz * dz + 1.0f),
++                        dz / sqrtf(dx * dx + dz * dz + 1.0f));
++}
++
++/* GoldenEye owns route traversal, collision and doors. Periodically update
++ * the destination when the closest living player changes position. */
++static void simProbeWalk(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
++{
++    int goal = -1;
++    float best = 1.0e30f;
++    float targetDist = 1.0e30f;
++    const struct player *target = NULL;
++    waypoint *start;
++    if (!chr->prop || !chr->prop->stan ||
++        (chr->actiontype != ACT_GOPOS && chr->actiontype != ACT_STAND)) return;
++
++    if (simProbeSeekWeapon(chr, polls, route)) return;
++
++    if (!route->sampleAt) {
++        route->sampleAt = polls;
++        route->sampleX = chr->prop->pos.x;
++        route->sampleZ = chr->prop->pos.z;
++    }
++    if (polls - route->sampleAt >= SIM_ROUTE_STALL_POLLS) {
++        float dx = chr->prop->pos.x - route->sampleX;
++        float dz = chr->prop->pos.z - route->sampleZ;
++        if (chr->actiontype == ACT_GOPOS && route->goal >= 0) {
++            const PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[route->goal].padID];
++            float gx = chr->prop->pos.x - pad->pos.x;
++            float gz = chr->prop->pos.z - pad->pos.z;
++            if (dx * dx + dz * dz < 64.0f * 64.0f &&
++                gx * gx + gz * gz > 180.0f * 180.0f) {
++                ++route->stalls;
++                sysLogPrintf(LOG_NOTE, "sim probe: stalled on waypoint %d (%d); replanning",
++                             route->goal, route->stalls);
++                if (route->stalls >= 2) {
++                    route->blockedGoal = route->goal;
++                    route->blockedUntil = polls + 360;
++                    route->retryAfter = polls + 120;
++                } else {
++                    route->retryAfter = polls;
++                }
++                route->goal = -1;
++            } else if (dx * dx + dz * dz >= 64.0f * 64.0f) {
++                route->stalls = 0;
++            }
++        }
++        route->sampleAt = polls;
++        route->sampleX = chr->prop->pos.x;
++        route->sampleZ = chr->prop->pos.z;
++    }
++    if (polls < route->retryAfter) return;
++    start = chrlvStanPathRelated(&chr->prop->pos, chr->prop->stan);
++    if (!start) {
++        route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++        sysLogPrintf(LOG_NOTE, "sim probe: no waypoint near character STAN");
++        return;
++    }
++    route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++    for (int p = 0; p < getPlayerCount() && p < 4; ++p) {
++        const struct player *player = g_playerPointers[p];
++        if (!player || !player->prop || player->bonddead) continue;
++        float dx = chr->prop->pos.x - player->prop->pos.x;
++        float dy = chr->prop->pos.y - player->prop->pos.y;
++        float dz = chr->prop->pos.z - player->prop->pos.z;
++        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
++        if (dist < targetDist) { targetDist = dist; target = player; }
++    }
++    if (!target) return;
++    {
++        float dx = chr->prop->pos.x - target->prop->pos.x;
++        float dz = chr->prop->pos.z - target->prop->pos.z;
++        /* No attack behavior yet. Don't circle an adjacent player just to
++         * reach the next waypoint while the player is standing still. */
++        if (dx * dx + dz * dz < 200.0f * 200.0f) return;
++    }
++    for (int i = 0; i < s_navCount; ++i) {
++        if (&s_navWaypoints[i] == start ||
++            (i == route->blockedGoal && polls < route->blockedUntil)) continue;
++        PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[i].padID];
++        float dx = pad->pos.x - target->prop->pos.x;
++        float dz = pad->pos.z - target->prop->pos.z;
++        float dy = pad->pos.y - target->prop->pos.y;
++        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
++        if (dist < best) { best = dist; goal = i; }
++    }
++    if (chr->actiontype == ACT_STAND && route->goal >= 0) {
++        const PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[route->goal].padID];
++        float dx = chr->prop->pos.x - pad->pos.x;
++        float dz = chr->prop->pos.z - pad->pos.z;
++        if (dx * dx + dz * dz > 180.0f * 180.0f) route->goal = -1;
++    }
++    if (goal >= 0 && goal != route->goal) {
++        int padid = s_navWaypoints[goal].padID;
++        int ok = chrGoToPad(chr, padid, SPEED_RUN);
++        sysLogPrintf(LOG_NOTE, "sim probe: route to waypoint %d (pad %d): %s",
++                     goal, padid, ok ? "running" : "unreachable");
++        if (ok) route->goal = goal;
++    }
++}
++
++void simulantProbePoll(void)
++{
++    SimProbeRuntime *probe = &s_probe;
++    SimProbeRoute *route = &probe->route;
++    int stage;
++    PadRecord *bestPad = NULL;
++    int bestPadIndex = -1;
++    int safePads = 0;
++
++    if (!simProbeEnabled()) return;
++
++    stage = lvlGetCurrentStageToLoad();
++    /* inputUpdate can run during lvlStageLoad, before init_guards and
++     * bodiesReset replace the previous match's stage-owned data. */
++    if (stage != s_readyStage) return;
++    if (current_menu != MENU_RUN_STAGE || gamemode != GAMEMODE_MULTI
++        || getPlayerCount() < 1 || stage <= 0) {
++        simProbeResetRuntime();
++        return;
++    }
++    /* The prototype is an extra actor, never a fifth combatant. */
++    int botSlot = mpRosterHumanCount();
++    if (mpRosterStage() != stage || botSlot >= mpRosterCount()) return;
++    if (stage != probe->lastStage) {
++        simProbeResetRuntime();
++        probe->lastStage = stage;
++    }
++    ++probe->polls;
++    if (!g_ChrSlots || g_NumChrSlots < 3) return;
++
++    /* Stage setup and its STAN links have been initialized by this point. */
++    int navReady = simProbeInstallFacilityNav(stage);
++
++    /* Keep the actor through its full death animation. GoldenEye removes a
++     * dead chr from its character slot after the corpse finishes fading. */
++    for (int i = 0; i < g_NumChrSlots; ++i) {
++        if (g_ChrSlots[i].model && g_ChrSlots[i].chrnum == SIM_PROBE_CHRNUM) {
++            ChrRecord *chr = &g_ChrSlots[i];
++            if (chr->actiontype == ACT_DIE || chr->actiontype == ACT_DEAD) {
++                if (!probe->deathPoll) {
++                    probe->deathPoll = probe->polls;
++                    mpCombatSimulantDied(botSlot, chr);
++                    sysLogPrintf(LOG_NOTE, "sim probe: character died; waiting for corpse removal");
++                }
++            }
++            if (navReady && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
++                simProbeWalk(chr, probe->polls, route);
++                simProbeCombat(chr, probe->polls, route);
++            }
++            return;
++        }
++    }
++    if (mpRosterSlotForChr(SIM_PROBE_CHRNUM) == botSlot) {
++        mpRosterUnbindSimulant(botSlot, SIM_PROBE_CHRNUM);
++        if (simProbeRosterTrace())
++            sysLogPrintf(LOG_NOTE, "sim roster: unbound slot %d", botSlot);
++    }
++    if (probe->deathPoll && probe->polls - probe->deathPoll < 180) return;
++    if (probe->deathPoll) {
++        probe->deathPoll = 0;
++        probe->attempts = 0;
++        probe->retryAfter = 0;
++        simProbeResetRoute(route);
++        sysLogPrintf(LOG_NOTE, "sim probe: respawning character");
++    }
++    if (probe->attempts >= 5 || probe->polls < probe->retryAfter) return;
++
++    /* Pick uniformly from free multiplayer pads. The previous farthest-pad
++     * rule made the bot repeatedly appear on the opposite side of the map.
++     * GE's own spawn fallback uses 100 horizontal units of clearance. */
++    for (int padIndex = 0; padIndex < startpadcount && padIndex < 16; ++padIndex) {
++        PadRecord *pad = g_Startpad[padIndex];
++        float nearest = 1.0e30f;
++        if (!pad || !pad->stan) continue;
++        for (int p = 0; p < getPlayerCount() && p < 4; ++p) {
++            const struct player *player = g_playerPointers[p];
++            if (!player || !player->prop || player->bonddead) continue;
++            float dx = pad->pos.x - player->prop->pos.x;
++            float dz = pad->pos.z - player->prop->pos.z;
++            /* Player props are at eye height, pads at floor height. Use X/Z
++             * clearance so an occupied pad cannot pass the distance test. */
++            float distance = dx * dx + dz * dz;
++            if (distance < nearest) nearest = distance;
++        }
++        if (nearest >= 100.0f * 100.0f &&
++            (randomGetNext() % (unsigned)++safePads) == 0) {
++            bestPad = pad;
++            bestPadIndex = padIndex;
++        }
++    }
++    if (!bestPad) {
++        if (!probe->waitingForPadLogged) {
++            sysLogPrintf(LOG_NOTE, "sim probe: waiting for an unoccupied multiplayer spawn pad");
++            probe->waitingForPadLogged = 1;
++        }
++        return;
++    }
++    probe->waitingForPadLogged = 0;
++
++    ++probe->attempts;
++    probe->retryAfter = probe->polls + 120;
++    /* The pad supplies floor height and stan; a player prop is at eye height.
++     * chrSpawnAtCoord performs its own final collision/volume check. */
++    int body = get_player_mp_char_body(0);
++    int head = get_player_mp_char_head(0);
++    if (body >= 0 && body < BODIES_MAX) {
++        /* Remember each definition for stage teardown, not for every bot
++         * respawn. Multiple bots in one stage share the loaded headers. */
++        s_botModelUsed[body] = 1;
++        if (!c_item_entries[body].hasHead && head >= 0 && head < HEAD_END)
++            s_botModelUsed[head] = 1;
++        s_lastBotBody = body;
++        s_lastBotHead = head;
++        simProbeLogModel("spawn before body", body, head, body);
++        if (!c_item_entries[body].hasHead)
++            simProbeLogModel("spawn before head", body, head, head);
++    }
++    PropRecord *spawned = chrSpawnAtCoord(body, head,
++                                          &bestPad->pos, bestPad->stan,
++                                          0.0f, NULL, 0x10);
++    simProbeLogModel("spawn after body", body, head, body);
++    if (spawned && spawned->chr && body >= 0 && body < BODIES_MAX &&
++        !c_item_entries[body].hasHead) {
++        /* chrSpawnAtCoord can resolve a random-head sentinel itself. Record
++         * the actual attached model when it returns a live character. */
++        int actualHead = spawned->chr->headnum;
++        if (actualHead >= 0 && actualHead < HEAD_END) {
++            s_botModelUsed[actualHead] = 1;
++            s_lastBotHead = actualHead;
++            simProbeLogModel("spawn after head", body, actualHead, actualHead);
++        }
++    }
++    if (!spawned || !spawned->chr) {
++        sysLogPrintf(LOG_NOTE, "sim probe: character spawn failed in stage %d", stage);
++        return;
++    }
++    /* chrAllocate sets ACT_STAND but does not initialize its action union;
++     * stage AI scripts normally do that on their first tick. This character
++     * intentionally has no stage AI script. */
++    memset(&spawned->chr->act_stand, 0, sizeof(spawned->chr->act_stand));
++    chrlvMergeKneelToStand(spawned->chr, 16.0f);
++    spawned->chr->chrnum = SIM_PROBE_CHRNUM;
++    if (!mpRosterBindSimulant(botSlot, SIM_PROBE_CHRNUM)) {
++        sysLogPrintf(LOG_WARNING, "sim probe: failed to bind match slot %d", botSlot);
++    } else {
++        mpCombatSpawnSimulant(botSlot, spawned->chr);
++        if (simProbeRosterTrace()) {
++            const MpRosterEntry *entry = mpRosterEntry(botSlot);
++            sysLogPrintf(LOG_NOTE, "sim roster: bound slot %d chrnum=%d life=%u",
++                         botSlot, SIM_PROBE_CHRNUM, entry->incarnation);
++        }
++    }
++    probe->attempts = 0;
++    simProbeResetRoute(route);
++    route->retryAfter = probe->polls + 30;
++    sysLogPrintf(LOG_NOTE, "sim probe: spawned character %d in stage %d at pad %d (%.0f %.0f %.0f)",
++                 SIM_PROBE_CHRNUM, stage, bestPadIndex, (double)spawned->pos.x,
++                 (double)spawned->pos.y, (double)spawned->pos.z);
++}
+diff --git a/src/game/simulant_probe.h b/src/game/simulant_probe.h
+new file mode 100644
+index 0000000..525b57c
+--- /dev/null
++++ b/src/game/simulant_probe.h
+@@ -0,0 +1,16 @@
++/* Adapted from birdturtle/goldeneye-pc-port at 7440ab16 (MIT).
++ * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
++#ifndef GE_SIMULANT_PROBE_H
++#define GE_SIMULANT_PROBE_H
++
++struct PropRecord;
++struct PropRecord *simulantProbeGetProp(void);
++
++/* Temporary PC-only proof that an AI character can exist beside MP players. */
++void simulantProbePoll(void);
++/* Allow the probe to use stage data only after lvlStageLoad has returned. */
++void simulantProbeStageReady(int stage);
++/* Called after stage guard/object cleanup, before MEMPOOL_STAGE is reused. */
++void simulantProbeStageTeardown(void);
++
++#endif

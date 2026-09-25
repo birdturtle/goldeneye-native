@@ -39,6 +39,35 @@ Split by *when* they can be applied rather than by subject.
 `0029-modern-mouse-look.patch` adds the direct mouse-angle consumer in `bondview2.c`,
 after `0028`. It respects game input locks and leaves vehicle controls on the original path.
 
+`0033-simulant-multiplayer.patch` adds the first visible Simulant match slice after
+`0032`: one controller can select Multiplayer, the Players dossier offers one
+character Simulant, and Facility can start with one human viewport. The actor
+borrows the already linked solo Facility waypoint graph at runtime after checking
+that the live multiplayer pads match; no extracted waypoint table is shipped in
+the patch. It adds scoring, radar, watch, combat, and respawn hooks. Additional
+Simulants and other maps still need runtime navigation and gameplay validation.
+The adapted character and combat code comes from
+`birdturtle/goldeneye-pc-port` at `7440ab16` under the MIT notice in
+`getv/port/SIMULANT_SOURCE_LICENSE.txt`.
+
+`0034-file-select-folder-hitbox.patch` restores native file selection after
+`0033` by passing explicit pairs of model extents to the original screen
+projection function. The decompilation assumed adjacent stack locals when it
+passed single floats as two-coordinate pointers. This patch retains the N64
+source branch and changes only the native folder hit test; Copy and Erase use
+their existing text/icon rectangles.
+
+`0035-multiplayer-controls-simulant-speed.patch` seeds the native port's
+configured control style for one or two human multiplayer players, preserving
+choices made on the controller options page; Simulant route requests use the
+engine's sprint gait instead of its slower guard run gait.
+
+`0036-native-gopos-animation-gait.patch` fixes the actual animation selector:
+the route stores its speed in `act_gopos.unk59`, but the old selector read raw
+action byte 45. Native pointer alignment moves that field to byte 81, so byte
+45 reads waypoint pointer data and normally selects the walking animation.
+Movement and animation now read the same typed speed field.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them

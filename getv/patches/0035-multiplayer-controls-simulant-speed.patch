@@ -1,0 +1,70 @@
+diff --git a/src/game/front.c b/src/game/front.c
+index fd93b99..572ea74 100644
+--- a/src/game/front.c
++++ b/src/game/front.c
+@@ -4853,6 +4853,10 @@ void reset_mp_options_for_scenario(MPSCENARIOS scenarioid)
+ void init_mp_options_for_scenario(s32 numplayers)
+ {
+     s32 i;
++#ifdef GE_PORT_NATIVE
++    static u8 native_style_seeded[MAX_PLAYER_COUNT];
++    static u8 native_style_downgraded[MAX_PLAYER_COUNT];
++#endif
+ 
+ #ifdef GE_PORT_NATIVE
+     if (numplayers < 1) numplayers = 1;
+@@ -4874,6 +4878,20 @@ void init_mp_options_for_scenario(s32 numplayers)
+ 
+     for (i=0; i < selected_num_players; i++)
+     {
++#ifdef GE_PORT_NATIVE
++        /* Solo and one/two-human multiplayer share the port's twin-stick
++         * default. Preserve a later choice from the controller options page.
++         * Three or four humans cannot each use two of the four N64 ports. */
++        if (numplayers <= 2 && (!native_style_seeded[i] || native_style_downgraded[i])) {
++            const char *configured = getenv("GETV_CONTROLS");
++            int style = (configured && *configured) ? atoi(configured)
++                                                  : CONTROLLER_CONFIG_GALORE;
++            if (style >= CONTROLLER_CONFIG_HONEY && style <= CONTROLLER_CONFIG_GOODHEAD)
++                controlstyle_player[i] = style;
++            native_style_seeded[i] = 1;
++            native_style_downgraded[i] = 0;
++        }
++#endif
+         if (player_char[i] == -1)
+         {
+             player_char[i] = i;
+@@ -4883,6 +4901,9 @@ void init_mp_options_for_scenario(s32 numplayers)
+         if ((numplayers >= 3) && (controlstyle_player[i] >= CONTROLLER_CONFIG_PLENTY))
+         {
+             controlstyle_player[i] = CONTROLLER_CONFIG_HONEY;
++#ifdef GE_PORT_NATIVE
++            native_style_downgraded[i] = 1;
++#endif
+         }
+     }
+ 
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+index 6896ab6..fb54e9d 100644
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -368,7 +368,9 @@ static int simProbeSeekWeapon(ChrRecord *chr, unsigned polls, SimProbeRoute *rou
+     if (polls >= route->retryAfter &&
+         (route->weaponTarget != nearest || chr->actiontype != ACT_GOPOS)) {
+         int pad = nearest->weapon->pad;
+-        int ok = chrGoToPad(chr, pad, SPEED_RUN);
++        /* SPEED_RUN is the guard's slow intermediate gait; use the engine's
++         * sprint route so the Simulant traverses a multiplayer map promptly. */
++        int ok = chrGoToPad(chr, pad, SPEED_SPRINT);
+         sysLogPrintf(LOG_NOTE, "sim probe: route to weapon item %d at pad %d: %s",
+                      nearest->weapon->weaponnum, pad, ok ? "running" : "unreachable");
+         route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+@@ -573,7 +575,7 @@ static void simProbeWalk(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
+     }
+     if (goal >= 0 && goal != route->goal) {
+         int padid = s_navWaypoints[goal].padID;
+-        int ok = chrGoToPad(chr, padid, SPEED_RUN);
++        int ok = chrGoToPad(chr, padid, SPEED_SPRINT);
+         sysLogPrintf(LOG_NOTE, "sim probe: route to waypoint %d (pad %d): %s",
+                      goal, padid, ok ? "running" : "unreachable");
+         if (ok) route->goal = goal;

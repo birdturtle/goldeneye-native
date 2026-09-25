@@ -17,6 +17,7 @@ Sources and full texts: `docs/research/MGB64_MINING.md` §5, `docs/research/GOLD
 | `fast3d/ge_sky_rdp.{c,h}` | ours | decodes GE's hand-built RDP triangles from `sky.c`'s `G_RDPHALF_*` pairs |
 | `audio/ge_mixer.c` | ours, built against libultra's AL semantics | `aPoleFilter` derived from GE's own `init_lpfilter` coefficients |
 | `src/**`, `mac/**` | ours | tvOS/macOS harness, input, asset bridge, render loop |
+| `src/mp_roster.{c,h}`, `src/mp_simulants.{c,h}` | `birdturtle/goldeneye-pc-port` at `7440ab16`, MIT, Copyright 2026 James Dansereau | Adapted four-combatant roster and human-first Simulant configuration; full MIT notice in `SIMULANT_SOURCE_LICENSE.txt`. |
 
 Anything adapted from another project must record repo, commit and file both at the
 adaptation site and in this document.

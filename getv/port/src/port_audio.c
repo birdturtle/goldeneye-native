@@ -48,10 +48,11 @@
  * the right size. */
 #define GE_ACMD_SIZE        3000
 
-/* How much audio to keep queued on the device, in stereo frames. Two video frames'
- * worth is enough to ride out a slow frame without adding audible latency; the game
- * pushes ~736 samples per frame at 60 Hz. */
-#define GE_QUEUE_TARGET     (GE_FRAME_SAMPLES * 4)
+/* A synthesis block is two 60 Hz fields (~33 ms). The old four-block target
+ * queued ~133 ms before SDL's device buffer, making effects visibly late.
+ * One block plus the minimum synthesis granularity below allows roughly one
+ * additional block as headroom without permanently sitting four blocks ahead. */
+#define GE_QUEUE_TARGET     GE_FRAME_SAMPLES
 
 /* Mirrors GE_DMEM_SIZE in port/audio/ge_mixer.c -- reporting only. */
 #define GE_DMEM_REPORT      4096
@@ -66,9 +67,6 @@ static s32          geCmdLen   = 0;
 static int          geAudioReady = 0;
 static int          geAudioStarted = 0;
 static unsigned long long geFrames = 0;
-/* Our own substitute for SDL_GetQueuedAudioSize -- see gePortAudioFrame. */
-static unsigned long long geSubmitted = 0;
-static Uint32 geClockStart = 0;
 
 /* Rare's reverb configuration, copied verbatim out of src/audi.c (CUSTOM_FX_PARAMS_N).
  * music.c asks for AL_FX_CUSTOM but never fills in ALSynConfig.params - on the N64
@@ -567,28 +565,10 @@ void gePortAudioFrame(void)
         return;
     }
 
-    /* audi.c recalculated this every frame to keep the DAC exactly full, because audio
-     * was clocked off the video interrupt and the two drift. That feedback is not
-     * optional here either: GE_FRAME_SAMPLES is two fields' worth (audi.c's
-     * FRAMES_PER_FIELD_AS_POW2), so submitting one per 60 Hz video frame is twice as
-     * much audio as the device consumes, and the queue would grow without bound.
-     *
-     * Tracked here rather than read back with SDL_GetQueuedAudioSize(). Both work; this
-     * one has no dependency on the audio backend's bookkeeping, and it drifts only as
-     * far as SDL_GetTicks does. SDL_GetQueuedAudioSize was once suspected of causing
-     * the frame-1 crash described at the head of gePortAudioFrame; it does not, and
-     * replacing it with the accounting below changed nothing. */
-    {
-        Uint32 now = SDL_GetTicks();
-        unsigned long long consumed;
-
-        if (geClockStart == 0) {
-            geClockStart = now;
-        }
-        consumed = (unsigned long long)(now - geClockStart) * GE_OUTPUT_RATE / 1000ULL;
-
-        queued = (geSubmitted > consumed) ? (s32)(geSubmitted - consumed) : 0;
-    }
+    /* Base the feedback on samples SDL has yet to play. Elapsed wall time minus
+     * samples submitted did not account for actual backend consumption and could
+     * understate a growing queue after stalls or device scheduling jitter. */
+    queued = (s32)(SDL_GetQueuedAudioSize(geAudioDev) / 4);
 
     want = GE_QUEUE_TARGET - queued;
     if (want > GE_MAX_FRAME) {
@@ -662,7 +642,6 @@ void gePortAudioFrame(void)
 
     if (geFrames < 4) { printf("[getv] af%llu: -> SDL_QueueAudio\n", geFrames); fflush(stdout); }
     if (!getenv("GETV_NO_AUDIO_QUEUE")) SDL_QueueAudio(geAudioDev, geOutBuf, (Uint32)want * 4);
-    geSubmitted += (unsigned long long)want;
     if (geFrames < 4) { printf("[getv] af%llu: queued ok\n", geFrames); fflush(stdout); }
 
     if (geFrames++ == 0) {

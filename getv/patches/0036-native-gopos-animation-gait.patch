@@ -1,0 +1,16 @@
+diff --git a/src/game/chraction.c b/src/game/chraction.c
+index 1229d71..010bf4c 100644
+--- a/src/game/chraction.c
++++ b/src/game/chraction.c
+@@ -3743,7 +3743,10 @@ void get_sound_at_range(ChrRecord *self, s32 arg1, s32 arg2)
+ */
+ void play_hit_soundeffect_and_proper_volume( ChrRecord *self)
+ {
+-    get_sound_at_range(self, self->act_ubytes.padding[45], c_item_entries[self->bodynum].isMale);
++    /* On N64, raw action byte 45 aliases act_gopos.unk59. Native waypoint
++     * pointers are eight bytes, so the speed field moves and byte 45 lands
++     * inside a waypoint pointer. Read the typed gait used by route movement. */
++    get_sound_at_range(self, self->act_gopos.unk59, c_item_entries[self->bodynum].isMale);
+ }
+ 
+ 

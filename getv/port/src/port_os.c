@@ -301,23 +301,23 @@ OSIntMask osSetIntMask(OSIntMask im) { (void)im; return 0; }
  * one is not. Ports 2-4 have no such problem: joyCheckStatus() re-queries every 120
  * frames (joy.c:482) and rebuilds g_ConnectedControllers from these errno fields, so a
  * pad that arrives late does light up its port later. */
-/* ---- GETV_DUALANALOG: one physical gamepad -> the two N64 pads style 2.2 wants ----
+/* ---- GETV_DUALANALOG: each human's controller -> two N64 pads in 2.x styles ----
  *
  * GoldenEye already has dual-analog. Styles 2.2 Galore and 2.4 Goodhead are
  * pad-2-moves / pad-1-looks (GE_RETAIL_BEHAVIOUR.md §1.3, `bondview2.c:5056-5068`),
  * which is exactly a modern twin-stick pad. Nothing has to be invented; the two sticks
  * just have to arrive on two N64 ports.
  *
- *   N64 port 0  = "controller 1"  X = turn,   Y = pitch   <- physical RIGHT stick
- *   N64 port 1  = "controller 2"  X = strafe, Y = walk    <- physical LEFT  stick
+ *   Human i's first pad at port i = turn/pitch <- physical RIGHT stick
+ *   Second pad at i + human count = strafe/walk <- physical LEFT stick
  *
  * `bondview2.c:5017-5019` reads the second pad at
  * `joyGetStickX(get_cur_playernum() + getPlayerCount())`, which in 1P is index 1.
  *
  * The failure mode here is silent: every joy.c accessor gates on
  * `g_ConnectedControllers >> contpadnum & 1` (joy.c:540, :551, :562, :573, :584, :595)
- * and returns 0 with no diagnostic when the bit is clear. So claiming port 1 in
- * gePortLiveCount() is not cosmetic -- without it the second stick reads as a dead
+ * and returns 0 with no diagnostic when the bit is clear. So claiming the
+ * second pad in gePortLiveCount() matters -- without it the left stick reads as a dead
  * centre forever and looks exactly like a mapping bug.
  *
  * Triggers, for style 2.2 Galore (`bondview2.c:5070-5085`): FIRE is Z on controller 1
@@ -325,17 +325,9 @@ OSIntMask osSetIntMask(OSIntMask im) { (void)im; return 0; }
  * right-trigger-shoots / left-trigger-aims layout with no further translation.
  * (2.4 Goodhead is the same sticks with the two Zs swapped.)
  *
- * Two known consequences, which are why this defaults to off:
- *   - The front-end reads port 0's stick for menu navigation (`front.c:1149-1150`,
- *     `joyGetStickX(PLAYER_1)`), and port 0 is now the look stick, so menus are driven
- *     by the right stick. The physical D-pad still works and is unaffected.
- *   - A second reported port makes the main menu's multiplayer entry selectable
- *     (`front.c:3095`, `:3243`, both gated on `joyGetControllerCount() >= 2`) even
- *     though only one physical pad exists.
- *
- * Port 1 is only ever claimed when there is exactly one physical pad. With two real
- * pads the player genuinely has two controllers and the retail assignment applies
- * unchanged; stealing port 1 there would break real 2-player. */
+ * The front-end always sees only the real controller count and accepts either
+ * stick for menus. In play, one human uses ports 0+1 and two humans use 0+2,
+ * 1+3. Three/four-human matches keep one N64 pad per player. */
 static int geDualAnalog(void)
 {
     static int on = -1;
@@ -345,21 +337,13 @@ static int geDualAnalog(void)
             /* Explicit wins, either way. */
             on = (*e == '1') ? 1 : 0;
         } else {
-            /* Derived from the chosen style rather than being a second independent
-             * default. The split only makes sense for a two-controller style, and a
-             * two-controller style is unplayable on one pad without it, so one setting
-             * must not be able to contradict the other. GETV_CONTROLS is what the
-             * config layer's `controls=` key exports (ge_config.c:314); the fallback
-             * matches file2.c's own default so the two agree when neither a config
-             * file nor an environment override is present.
-             * CONTROLLER_CONFIG_PLENTY == 4 is the first two-controller style. */
-            const char *c = getenv("GETV_CONTROLS");
-            int style = (c != NULL && *c != '\0') ? atoi(c) : 5 /* GALORE */;
-            on = (style >= 4 && style <= 7) ? 1 : 0;
+            /* The chosen style can change on the multiplayer controller page.
+             * geDualAnalogActive checks that live choice for each human; only an
+             * explicit override should disable synthesis altogether. */
+            on = 1;
         }
         if (on) {
-            printf("[getv] input: dual-analog ON -- one pad presented as N64 ports 0+1 "
-                   "(port 0 = right stick/look, port 1 = left stick/move). "
+            printf("[getv] input: dual-analog available for 2.x styles during gameplay. "
                    "GETV_DUALANALOG=0 to disable.\n");
             fflush(stdout);
         }
@@ -443,14 +427,29 @@ static s8 geStickOr(int a, int b)
     return (s8)v;
 }
 
-/* 1 when the split is actually in effect this frame: enabled, and at most one physical
- * pad. `<= 1` rather than `== 1` because a scripted or synthesised port (GETV_SCRIPT /
- * GETV_PADS) reports a hardware count of 0 while still delivering a present pad, and
- * gePortLiveCount() floors the port count to 1 regardless. With two real pads the
- * player genuinely has two controllers and retail assignment applies untouched. */
+/* Split only when a running match has at most two humans, each with an input
+ * device, and at least one has selected a 2.x controller style. */
 static int geDualAnalogActive(void)
 {
-    return geDualAnalog() && gePortInputPadCount() <= 1;
+    extern s32 getPlayerCount(void);
+    extern u32 get_player_control_style(s32 playernum);
+    int humans = getPlayerCount();
+    int physical = gePortInputPadCount();
+    int i;
+
+    /* Game code reads a second pad at player index + human count. With two
+     * humans those are ports 2 and 3, not port 1. Reserve enough N64 slots
+     * only during gameplay; menu player counts must reflect real devices. */
+    /* A keyboard/mouse player can occupy port 0 even when SDL reports no
+     * physical gamepad; the input layer synthesizes that first port. */
+    if (geInFrontEnd() || !geDualAnalog() || humans < 1 || humans > 2
+        || (physical < humans && !(humans == 1 && physical == 0))
+        || physical > 2) return 0;
+    for (i = 0; i < humans; ++i) {
+        u32 style = get_player_control_style(i);
+        if (style >= 4 && style <= 7) return 1;
+    }
+    return 0;
 }
 
 static int gePortLiveCount(void)
@@ -477,7 +476,10 @@ static int gePortLiveCount(void)
      * errno fields on any changed edge (and re-queries every 120 frames anyway,
      * joy.c:482), so the second port lights up as the level starts rather than up to
      * two seconds later. The edge happens once per level, not per frame. */
-    if (geDualAnalog() && n == 1 && !geInFrontEnd()) { n = 2; }
+    if (geDualAnalogActive()) {
+        extern s32 getPlayerCount(void);
+        n = getPlayerCount() * 2;
+    }
 
     /* Announce every change, not just the first value. The point of the re-query is
      * that ports appear late; a single startup line cannot tell "one pad" from "one
@@ -889,15 +891,15 @@ static void gePortDecodePad(int port, const struct GePadState *st, OSContPad *pa
 /* The two halves of one physical pad, written straight into two OSContPads.
  * Everything downstream -- joy.c's sample ring, its edge detector, bondview2.c's
  * style dispatch -- is the production path and sees two ordinary controllers. */
-static void geDecodeDualAnalog(const struct GePadState *st, OSContPad *p0, OSContPad *p1)
+static void geDecodeDualAnalog(int player, const struct GePadState *st,
+                               OSContPad *p0, OSContPad *p1)
 {
+    extern u32 get_player_control_style(s32 playernum);
+    u32 style = get_player_control_style(player);
+    int swapped = (style == 6 || style == 7); /* 2.3/2.4 swap Z fire and aim */
     u16 common = 0;
-    /* Player 1's bindings throughout. The two OSContPads here are two N64 PORTS driven by
-     * one physical pad held by one human, not two players -- geDecodeDualAnalog is only
-     * reached when a single pad is present (see the geDualAnalogActive() branch in the
-     * caller), so p1 is still player 1's second controller and must not read player 2's
-     * keys. */
-    const int player = 0;
+    /* Both halves use this human's bindings, including player 2's keyboard or
+     * controller bindings when there are two human viewports. */
 
     /* Menus: fixed buttons on both halves, either stick on the cursor. */
     if (geInFrontEnd()) {
@@ -947,18 +949,26 @@ static void geDecodeDualAnalog(const struct GePadState *st, OSContPad *p0, OSCon
     /* 2.2 Galore: FIRE is Z on controller 1, AIM is Z on controller 2
      * (`bondview2.c:5070-5085`). The binding layer decides which physical input each
      * one is; the port assignment is fixed by the style. */
-    p0->button  = common | (geHeld(st, player, GE_ACT_FIRE) ? CONT_G : 0)
-                         | ((st->n64 & GE_N64_Z) ? CONT_G : 0)
+    p0->button  = common | (geHeld(st, player, swapped ? GE_ACT_AIM : GE_ACT_FIRE) ? CONT_G : 0)
+                         | ((!swapped && (st->n64 & GE_N64_Z)) ? CONT_G : 0)
                          | (geHeld(st, player, GE_ACT_WEAPON_PREV) ? CONT_G : 0);
     p0->errno   = 0;
 
     p0->stick_x = geStick(st->rx);
     p0->stick_y = (s8)(-(int)geStick(st->ry));        /* SDL +Y down, N64 +Y up */
 
-    p1->button  = common | (geHeld(st, player, GE_ACT_AIM) ? CONT_G : 0);
+    p1->button  = common | (geHeld(st, player, swapped ? GE_ACT_FIRE : GE_ACT_AIM) ? CONT_G : 0)
+                         | ((swapped && (st->n64 & GE_N64_Z)) ? CONT_G : 0);
     p1->stick_x = geStick(st->lx);
     p1->stick_y = (s8)(-(int)geStick(st->ly));
     p1->errno   = 0;
+
+    /* 2.1 Plenty and 2.3 Domino use the second pad for strafe and
+     * vertical look, while the first controls yaw and forward motion. */
+    if (style == 4 || style == 6) {
+        p0->stick_y = (s8)(-(int)geStick(st->ly));
+        p1->stick_y = (s8)(-(int)geStick(st->ry));
+    }
 }
 
 void osContGetReadData(OSContPad *pad)
@@ -989,11 +999,24 @@ void osContGetReadData(OSContPad *pad)
     gePortInputPollPort(0, &st);
     live = gePortLiveCount();
 
-    if (geDualAnalogActive() && st.present) {
-        geDecodeDualAnalog(&st, &pad[0], &pad[1]);
-        gePortInputTrace(0, &st, pad[0].button, pad[0].stick_x, pad[0].stick_y);
-        gePortInputTrace(1, &st, pad[1].button, pad[1].stick_x, pad[1].stick_y);
-        for (i = 2; i < GE_PORT_MAX_PADS; i++) {
+    if (geDualAnalogActive()) {
+        extern s32 getPlayerCount(void);
+        int humans = getPlayerCount();
+        for (i = 0; i < humans; i++) {
+            extern u32 get_player_control_style(s32 playernum);
+            if (i != 0) gePortInputPollPort(i, &st);
+            if (st.present) {
+                u32 style = get_player_control_style(i);
+                if (style >= 4 && style <= 7)
+                    geDecodeDualAnalog(i, &st, &pad[i], &pad[i + humans]);
+                else
+                    gePortDecodePad(i, &st, &pad[i]);
+            }
+            gePortInputTrace(i, &st, pad[i].button, pad[i].stick_x, pad[i].stick_y);
+            gePortInputTrace(i + humans, &st, pad[i + humans].button,
+                             pad[i + humans].stick_x, pad[i + humans].stick_y);
+        }
+        for (i = humans * 2; i < GE_PORT_MAX_PADS; i++) {
             pad[i].errno = CONT_NO_RESPONSE_ERROR;
         }
         return;

@@ -28,14 +28,16 @@
 
   USAGE
       powershell -NoProfile -File getv\build_windows.ps1 -Target all
-      -Target : all | lib | port | app | clean      (default all)
+      -Target : all | lib | game | port | app | clean  (default all)
+      -GameSource : game source paths to compile with -Target game (requires a previous full build)
       -Mingw  : toolchain root                      (default C:\msys64\mingw64)
       -Jobs   : parallel compiles                   (default = processor count)
 #>
 [CmdletBinding()]
 param(
-  [ValidateSet('all','lib','port','app','dist','clean')]
+  [ValidateSet('all','lib','game','port','app','dist','clean')]
   [string]$Target = 'all',
+  [string[]]$GameSource = @(),
   [string]$Mingw  = 'C:\msys64\mingw64',
   [int]$Jobs      = 0,
 
@@ -314,7 +316,36 @@ function Build-Lib {
     $f3 = Invoke-Batch -Label 'audio' -Files $audio -Flags $audioFlags -Prefix 'audio_'
   } finally { Pop-Location }
 
+  if (($f1 + $f2 + $f3) -gt 0) { throw 'game, asset, or audio compilation failed' }
   Build-Port
+}
+
+function Build-GameChanged {
+  if ($GameSource.Count -eq 0) { throw '-Target game requires -GameSource <src path>' }
+  if (-not (Test-Path $bin) -or -not (Test-Path $obj)) {
+    throw 'focused game build needs an existing executable and objects -- run -Target all once'
+  }
+
+  $sourceRoot = [IO.Path]::GetFullPath((Join-Path $decomp 'src'))
+  $sources = @()
+  foreach ($source in $GameSource) {
+    # Paths are relative to vendor/ge-decomp, matching the normal game batch.
+    $candidate = [IO.Path]::GetFullPath((Join-Path $decomp $source))
+    if (-not $candidate.StartsWith($sourceRoot + [IO.Path]::DirectorySeparatorChar,
+                                   [StringComparison]::OrdinalIgnoreCase) -or
+        $candidate -notmatch '\.c$' -or -not (Test-Path -PathType Leaf $candidate) -or
+        $candidate -match '[\\/]src[\\/]libultra(re)?[\\/]') {
+      throw "not a game C source under vendor/ge-decomp/src: $source"
+    }
+    $sources += $candidate
+  }
+
+  Push-Location $decomp
+  try {
+    $relative = @($sources | ForEach-Object { Resolve-Path -Relative $_ })
+    $failed = Invoke-Batch -Label 'changed game' -Files $relative -Flags $gameFlags -Prefix 'game_'
+    if ($failed -gt 0) { throw "$failed changed game source(s) failed to compile" }
+  } finally { Pop-Location }
 }
 
 function Build-Port {
@@ -326,11 +357,13 @@ function Build-Port {
   $f4 = Invoke-Batch -Label 'port layer' -Files $c -Flags $portFlags -Prefix 'port_'
 
   $cpp = @(Get-ChildItem -Path "$here\port\src" -Filter *.cpp -ErrorAction SilentlyContinue |
-           ForEach-Object { $_.FullName })
+         ForEach-Object { $_.FullName })
+  $f5 = 0
   if ($cpp.Count -gt 0) {
     $f5 = Invoke-Batch -Label 'port c++' -Files $cpp -Prefix 'portxx_' -Compiler $gxx `
             -Flags ($portFlags + @('-std=c++17','-fno-exceptions','-fno-rtti'))
   }
+  if (($f4 + $f5) -gt 0) { throw 'port compilation failed' }
 }
 
 function Build-App {
@@ -544,6 +577,7 @@ function Build-Dist {
 switch ($Target) {
   'clean' { if (Test-Path $build) { Remove-Item $build -Recurse -Force }; Write-Output 'cleaned' }
   'lib'   { Build-Lib }
+  'game'  { Build-GameChanged }
   'port'  { Build-Port }
   'app'   { Build-App }
   'dist'  { Build-Dist }

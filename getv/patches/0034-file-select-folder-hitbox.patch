@@ -1,0 +1,76 @@
+diff --git a/src/game/front.c b/src/game/front.c
+index 9343454..fd93b99 100644
+--- a/src/game/front.c
++++ b/src/game/front.c
+@@ -2254,6 +2254,39 @@ void frontCleanUpWalletBond(void)
+ //********************************************************************************************************
+ //FILE SELECT
+ //********************************************************************************************************
++#ifdef GE_PORT_NATIVE
++/* The original caller placed xmax/xmin and ymax/ymin in separate locals and
++ * passed &xmin and &ymin as coord2d pointers. That depended on the N64 stack
++ * layout: a native compiler can put the other float anywhere. Keep the same
++ * model extents and projection, with actual pairs for the two input corners. */
++static s32 frontCursorOnFolder(Model *folder, struct coord3d *position,
++                               f32 cursorX, f32 cursorY)
++{
++    f32 xmax, xmin, ymax, ymin;
++    struct coord2d xlimits, ylimits, projectedRightDown, projectedLeftUp;
++    f32 left, right, top, bottom;
++
++    modelGetXYExtents(folder, &xmax, &xmin, &ymax, &ymin);
++    xlimits.f[0] = xmin;
++    xlimits.f[1] = xmax;
++    ylimits.f[0] = ymin;
++    ylimits.f[1] = ymax;
++    projectRectCornersTo2D(position, &xlimits, &ylimits,
++                           &projectedRightDown, &projectedLeftUp);
++
++    left = projectedRightDown.f[0] < projectedLeftUp.f[0]
++        ? projectedRightDown.f[0] : projectedLeftUp.f[0];
++    right = projectedRightDown.f[0] > projectedLeftUp.f[0]
++        ? projectedRightDown.f[0] : projectedLeftUp.f[0];
++    top = projectedRightDown.f[1] < projectedLeftUp.f[1]
++        ? projectedRightDown.f[1] : projectedLeftUp.f[1];
++    bottom = projectedRightDown.f[1] > projectedLeftUp.f[1]
++        ? projectedRightDown.f[1] : projectedLeftUp.f[1];
++    return left <= cursorX && cursorX <= right &&
++           top <= cursorY && cursorY <= bottom;
++}
++#endif
++
+ void init_menu05_fileselect(void)
+ {
+     s32 size = 0x6e000;
+@@ -2441,16 +2474,23 @@ s32 interface_menu05_fileselect(void)
+     {
+         for (foldernum = FOLDER1; foldernum < MAX_FOLDER_COUNT; foldernum++)
+         {
++#ifndef GE_PORT_NATIVE
+             f32 xmax;
+             f32 xmin;
+             f32 ymax;
+             f32 ymin;
+ 
+             struct rectbbox folderbbox;
++#endif
+ 
+             LEVEL_SOLO_SEQUENCE higheststage;
+             DIFFICULTY highestdifficulty;
+ 
++#ifdef GE_PORT_NATIVE
++            if (frontCursorOnFolder(walletinst[foldernum],
++                                    &folderpositions_camspace[foldernum],
++                                    cursor_h_pos, cursor_v_pos))
++#else
+             modelGetXYExtents(walletinst[foldernum], &xmax, &xmin, &ymax, &ymin);
+             projectRectCornersTo2D(&folderpositions_camspace[foldernum], &xmin, &ymin, &folderbbox.right, &folderbbox.left);
+ 
+@@ -2458,6 +2498,7 @@ s32 interface_menu05_fileselect(void)
+                 && (cursor_h_pos <= folderbbox.left)
+                 && (folderbbox.down <= cursor_v_pos)
+                 && (cursor_v_pos <= folderbbox.up))
++#endif
+             {
+                 fileGetHighestStageDifficultyCompletedForFolder(foldernum, &higheststage, &highestdifficulty);
+ #ifdef DEBUG
