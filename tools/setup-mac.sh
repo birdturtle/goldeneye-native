@@ -373,6 +373,12 @@ else
   ( cd "$DECOMP" && git apply "$HERE/getv/patches/0052-simulant-combat-sight.patch" ) \
     || die "0052-simulant-combat-sight.patch failed to apply"
 fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0053-simulant-temple-stan-routes.patch" ) 2>/dev/null; then
+  echo "0053-simulant-temple-stan-routes.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0053-simulant-temple-stan-routes.patch" ) \
+    || die "0053-simulant-temple-stan-routes.patch failed to apply"
+fi
 
 # The ROM's SHA-1, from whichever tool this machine actually has.
 #

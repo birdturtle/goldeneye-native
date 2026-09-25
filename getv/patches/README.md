@@ -160,6 +160,13 @@ goal. The stage graph can also bridge connected waypoint clusters.
 Thrown weapons and melee retain their tighter aim limits. The sight envelope
 is covered by the ROM-free `test_mp_sim_policy.c`.
 
+`0053-simulant-temple-stan-routes.patch` augments Temple's sparse multiplayer
+setup pads with centres from its live walkable STAN tiles, retaining original
+pad IDs for objects and spawns. It keeps a reachable pursuit target across
+route polls and favours the current visible combat target until a substantially
+closer one appears. The stage log reports the added floor nodes and graph
+connectivity. Other generated-map adapters are unchanged.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them

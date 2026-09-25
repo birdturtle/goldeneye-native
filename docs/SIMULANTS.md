@@ -29,6 +29,15 @@ with a bounded route bridge for the actor's six waypoint slots. No graph is
 stored per map or shipped as map data. The log reports node, edge, component,
 largest component and isolated pad counts for each generated stage.
 
+Temple has no authored multiplayer waypoint table. With generated navigation
+enabled, it now adds centres from live walkable STAN tiles between sparse setup
+pads. Original pad IDs remain valid for spawn and pickup objects; the synthetic
+points exist only for the duration of that stage. The log reports `stan=` for
+the extra nodes, or reports when sampling falls back to setup pads. The bot
+retains its current reachable pursuit target between route polls and switches
+only when another player offers a substantially cheaper route. These paths
+still require a Temple match playtest for door handling and actor clearance.
+
 Route decisions now measure path length on the active waypoint graph, with
 unreachable destinations removed from pickup, chase, maneuver and mine retreat
 choices. The graph is built once per stage and the Simulant's distance map is
