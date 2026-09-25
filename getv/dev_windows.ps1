@@ -9,7 +9,8 @@
   focused game target recompiles only changed game translation units. Port
   sources are rebuilt as a batch because they are relatively few and may share
   headers. Source patches adding/changing game headers, generated assets,
-  compiler flags, or patch setup require -Full.
+  compiler flags, or patch setup require -Full. A partial full build is
+  detected from missing asset objects and rebuilt before incremental linking.
 #>
 [CmdletBinding()]
 param(
@@ -91,6 +92,34 @@ if (-not $Full) {
         }
       }
     }
+  }
+}
+
+# A failed full build clears the object directory and can leave only part of the
+# asset batch behind. The old executable may still exist, so comparing timestamps
+# alone would attempt an incremental link with missing asset definitions.
+if (-not $Full) {
+  $missingAssets = @()
+  Push-Location $decomp
+  try {
+    # Mirror build_windows.ps1's asset selection and Invoke-Batch object naming.
+    $assetSources = @(Get-ChildItem 'assets' -Recurse -Filter '*.c' -File `
+                        -ErrorAction SilentlyContinue |
+      Where-Object { $_.Name -notlike '._*' -and $_.Name -notlike '*.inc.c' -and
+                     $_.FullName -notmatch '\\assets\\obseg\\setup\\e\\' -and
+                     $_.FullName -notmatch '\\assets\\obseg\\setup\\j\\' })
+    foreach ($file in $assetSources) {
+      $relative = Resolve-Path -Relative $file.FullName
+      $stem = ($relative -replace '[\\/]','_') -replace ':','' -replace '\.c$',''
+      if (-not (Test-Path (Join-Path $objDir "asset_$stem.o"))) {
+        $missingAssets += $relative
+      }
+    }
+  } finally { Pop-Location }
+  if ($assetSources.Count -eq 0 -or $missingAssets.Count -gt 0) {
+    $example = if ($missingAssets.Count -gt 0) { $missingAssets[0] } else { 'assets' }
+    Write-Host "Incomplete asset build ($example); doing a full build."
+    $Full = $true
   }
 }
 

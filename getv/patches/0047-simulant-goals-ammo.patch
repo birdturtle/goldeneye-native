@@ -1,0 +1,447 @@
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -68,6 +68,12 @@
+     PropRecord *armourTarget;
+     PropRecord *blockedArmour;
+     unsigned armourBlockedUntil;
++    PropRecord *ammoTarget;
++    PropRecord *blockedAmmo;
++    unsigned ammoBlockedUntil;
++    MpSimGoalKind goalKind;
++    int knifeAmmo;
++    int remoteAmmo;
+     ObjectRecord *mineObj; /* identity checked in the effect sidecar before dereference */
+     int noWeaponLogged;
+     int engaging;
+@@ -471,41 +477,98 @@
+     return 0;
+ }
+ 
+-/* Return true while a world gun is the navigation goal. Keep a real pickup
+- * and its respawn timer; the separate held copy uses GoldenEye's chr weapon
+- * allocation path. This does not fire or credit a shot to a player slot. */
+-static int simProbeSeekWeapon(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
+-{
+-    PropRecord *nearest = NULL;
+-    PropRecord *locked = NULL;
+-    float bestScore = 0.0f;
+-    float lockedScore = 0.0f;
++static int simProbeUsableArmour(PropRecord *prop, float current);
++
++/* PD's bot_find_pickup scans weapon, ammo and shield props independently of
++ * the equipped hand (n64decomp/perfect_dark at
++ * 169ed48bdcbfb3b568b028bd5bebb27680073514, src/game/bot.c).
++ * GoldenEye's selected MP set produces multi-ammo crates even for entries
++ * whose weapon prop has allowpickup=0. Only offer attacks we can execute. */
++static int simProbeAmmoInCrate(PropRecord *prop, int ammotype)
++{
++    struct s_mp_weapon_set *set = getPtrMPWeaponSetData();
++    if (!prop || !(prop->flags & PROPFLAG_ENABLED) || prop->parent ||
++        prop->timetoregen > 0 || !prop->stan || !prop->obj ||
++        prop->obj->prop != prop || prop->obj->type != PROPDEF_AMMO ||
++        !(prop->obj->state & PROPSTATE_RESPAWN) ||
++        (prop->obj->runtime_bitflags & RUNTIMEBITFLAG_00000800) ||
++        (prop->obj->flags & (PROPFLAG_UNCOLLECTABLE | PROPFLAG_INSIDEANOTHEROBJ)))
++        return 0;
++    int allowed = 0;
++    for (int i = 0; i < 8; ++i)
++        if (set[i].ammotype == ammotype &&
++            ((ammotype == AMMO_KNIFE && set[i].itemID == ITEM_THROWKNIFE) ||
++             (ammotype == AMMO_REMOTEMINE && set[i].itemID == ITEM_REMOTEMINE)))
++            allowed = 1;
++    if (!allowed || ammotype <= AMMO_NONE || ammotype > AMMOTYPE_GLOBAL_MAX)
++        return 0;
++    return ((MultiAmmoCrateRecord *)prop->obj)->slots[ammotype - 1].quantity;
++}
++
++typedef struct SimProbePickupChoice {
++    MpSimGoalKind kind;
++    PropRecord *prop;
++} SimProbePickupChoice;
++
++static SimProbePickupChoice simProbeChoosePickup(ChrRecord *chr,
++                                                  SimProbeRoute *route,
++                                                  unsigned polls)
++{
++    MpSimGoalChoice best[4] = { { MP_SIM_GOAL_PURSUIT, 0.0f },
++        { MP_SIM_GOAL_WEAPON, 0.0f }, { MP_SIM_GOAL_ARMOUR, 0.0f },
++        { MP_SIM_GOAL_AMMO, 0.0f } };
++    PropRecord *props[4] = { NULL, NULL, NULL, NULL };
++    int armed = chrGetEquippedWeaponProp(chr, GUNRIGHT) ||
++                chrGetEquippedWeaponProp(chr, GUNLEFT);
++    float armour = mpCombatSimulantArmour(chr);
+     int seen = 0;
+-    if (route->mineObj && mpSimEffectOwned(route->mineObj, MP_SIM_EFFECT_REMOTE_MINE))
+-        return 0;
+-    if (chrGetEquippedWeaponProp(chr, GUNRIGHT) ||
+-        chrGetEquippedWeaponProp(chr, GUNLEFT)) {
+-        route->weaponTarget = NULL;
+-        route->noWeaponLogged = 0;
+-        return 0;
+-    }
+-
+     for (PropRecord *prop = g_ActivePropsHead; prop && seen++ < MAX_PROPS;
+          prop = prop->next) {
+-        if (!simProbeUsableWorldGun(prop) ||
+-            (prop == route->blockedWeapon && polls < route->weaponBlockedUntil))
+-            continue;
+-        MpSimWeaponKind kind = simProbeWeaponKind(prop->weapon->weaponnum);
+         float dx = prop->pos.x - chr->prop->pos.x;
+         float dy = prop->pos.y - chr->prop->pos.y;
+         float dz = prop->pos.z - chr->prop->pos.z;
+         float distance = sqrtf(dx * dx + dz * dz + 16.0f * dy * dy);
+-        float score = mpSimPickupScore(kind, distance);
+-        if (prop == route->weaponTarget) { locked = prop; lockedScore = score; }
+-        if (score > bestScore) { bestScore = score; nearest = prop; }
+-    }
+-    /* Avoid repeatedly reversing direction for marginal score changes. */
+-    if (locked && lockedScore >= bestScore * 0.85f) nearest = locked;
++        float score = 0.0f;
++        MpSimGoalKind kind = MP_SIM_GOAL_PURSUIT;
++        if (!armed && simProbeUsableWorldGun(prop) &&
++            !(prop == route->blockedWeapon && polls < route->weaponBlockedUntil)) {
++            kind = MP_SIM_GOAL_WEAPON;
++            score = mpSimPickupScore(simProbeWeaponKind(prop->weapon->weaponnum), distance);
++        } else if (simProbeUsableArmour(prop, armour) &&
++                   !(prop == route->blockedArmour && polls < route->armourBlockedUntil)) {
++            kind = MP_SIM_GOAL_ARMOUR;
++            score = mpSimArmourPickupScore(armour,
++                mpSimArmourFromPickup(((BodyArmourRecord *)prop->obj)->amount), distance);
++            if (score < 35.0f) score = 0.0f;
++        } else if (!(prop == route->blockedAmmo && polls < route->ammoBlockedUntil)) {
++            int knives = simProbeAmmoInCrate(prop, AMMO_KNIFE);
++            int mines = simProbeAmmoInCrate(prop, AMMO_REMOTEMINE);
++            float knifeScore = knives ? mpSimAmmoPickupScore(MP_SIM_KNIFE,
++                route->knifeAmmo, get_max_ammo_for_type(AMMO_KNIFE), distance) : 0.0f;
++            float mineScore = mines ? mpSimAmmoPickupScore(MP_SIM_MINE,
++                route->remoteAmmo, get_max_ammo_for_type(AMMO_REMOTEMINE), distance) : 0.0f;
++            kind = MP_SIM_GOAL_AMMO;
++            score = knifeScore > mineScore ? knifeScore : mineScore;
++        }
++        if (score > best[kind].score ||
++            (score >= best[kind].score * 0.85f && score > 0.0f &&
++             prop == (kind == MP_SIM_GOAL_WEAPON ? route->weaponTarget :
++                      kind == MP_SIM_GOAL_ARMOUR ? route->armourTarget : route->ammoTarget))) {
++            best[kind].score = score;
++            props[kind] = prop;
++        }
++    }
++    MpSimGoalChoice choice = mpSimChooseGoal(best, 4, route->goalKind);
++    SimProbePickupChoice result = { choice.kind, props[choice.kind] };
++    return result;
++}
++
++/* Return true while a world gun is the navigation goal. Keep a real pickup
++ * and its respawn timer; the separate held copy uses GoldenEye's chr weapon
++ * allocation path. This does not fire or credit a shot to a player slot. */
++static int simProbeSeekWeapon(ChrRecord *chr, unsigned polls, SimProbeRoute *route,
++                              PropRecord *nearest)
++{
+     if (!nearest) {
+         route->weaponTarget = NULL;
+         if (!route->noWeaponLogged) {
+@@ -695,30 +758,9 @@
+     return mpSimArmourFromPickup(((BodyArmourRecord *)prop->obj)->amount) > current;
+ }
+ 
+-static int simProbeSeekArmour(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
+-{
+-    PropRecord *nearest = NULL, *locked = NULL;
+-    float current = mpCombatSimulantArmour(chr);
+-    float best = 0.0f, lockedScore = 0.0f;
+-    int seen = 0;
+-    for (PropRecord *prop = g_ActivePropsHead; prop && seen++ < MAX_PROPS;
+-         prop = prop->next) {
+-        if (!simProbeUsableArmour(prop, current) ||
+-            (prop == route->blockedArmour && polls < route->armourBlockedUntil))
+-            continue;
+-        float dx = prop->pos.x - chr->prop->pos.x;
+-        float dy = prop->pos.y - chr->prop->pos.y;
+-        float dz = prop->pos.z - chr->prop->pos.z;
+-        float distance = sqrtf(dx * dx + dz * dz + 16.0f * dy * dy);
+-        float score = mpSimArmourPickupScore(current,
+-            mpSimArmourFromPickup(((BodyArmourRecord *)prop->obj)->amount), distance);
+-        if (prop == route->armourTarget) { locked = prop; lockedScore = score; }
+-        if (score > best) { best = score; nearest = prop; }
+-    }
+-    if (locked && lockedScore >= best * 0.85f) nearest = locked;
+-    /* Ignore a sliver of protection across the map; a full nearby vest
+-     * easily clears this threshold. */
+-    if (best < 35.0f) nearest = NULL;
++static int simProbeSeekArmour(ChrRecord *chr, unsigned polls, SimProbeRoute *route,
++                              PropRecord *nearest)
++{
+     if (!nearest) {
+         if (route->armourTarget) {
+             route->goal = -1;
+@@ -800,6 +842,90 @@
+     return 1;
+ }
+ 
++static int simProbeSeekAmmo(ChrRecord *chr, unsigned polls, SimProbeRoute *route,
++                            PropRecord *nearest)
++{
++    int pad = nearest->obj->pad;
++    float dx = nearest->pos.x - chr->prop->pos.x;
++    float dy = nearest->pos.y - chr->prop->pos.y;
++    float dz = nearest->pos.z - chr->prop->pos.z;
++    if (dx * dx + dz * dz < 135.0f * 135.0f &&
++        dy * dy < 150.0f * 150.0f) {
++        StandTile *tile = chr->prop->stan;
++        chrSetMoving(chr, 0);
++        int reachable = stanTestLineUnobstructed(&tile, chr->prop->pos.x,
++            chr->prop->pos.z, nearest->pos.x, nearest->pos.z,
++            CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER | CDTYPE_AIOPAQUE,
++            chr->chrheight - 20.0f, chr->chrheight - 20.0f, 0.0f, 1.0f);
++        chrSetMoving(chr, 1);
++        if (reachable && tile == nearest->stan) {
++            int knives = simProbeAmmoInCrate(nearest, AMMO_KNIFE);
++            int mines = simProbeAmmoInCrate(nearest, AMMO_REMOTEMINE);
++            int knifeCap = get_max_ammo_for_type(AMMO_KNIFE);
++            int mineCap = get_max_ammo_for_type(AMMO_REMOTEMINE);
++            int oldKnives = route->knifeAmmo, oldMines = route->remoteAmmo;
++            if (knives > 0 && knifeCap > oldKnives) {
++                route->knifeAmmo += knives;
++                if (route->knifeAmmo > knifeCap) route->knifeAmmo = knifeCap;
++            }
++            if (mines > 0 && mineCap > oldMines) {
++                route->remoteAmmo += mines;
++                if (route->remoteAmmo > mineCap) route->remoteAmmo = mineCap;
++            }
++            if (route->knifeAmmo != oldKnives || route->remoteAmmo != oldMines) {
++                propExecuteTickOperation(nearest, TICKOP_FREE);
++                sysLogPrintf(LOG_NOTE, "sim probe: picked up ammo at pad %d; knives=%d remote mines=%d",
++                             pad, route->knifeAmmo, route->remoteAmmo);
++                route->ammoTarget = NULL;
++                route->goal = -1;
++                route->retryAfter = polls + 30;
++                return 1;
++            }
++        }
++        route->blockedAmmo = nearest;
++        route->ammoBlockedUntil = polls + 360;
++        route->ammoTarget = NULL;
++        route->retryAfter = polls;
++        return 0;
++    }
++    if (route->ammoTarget == nearest &&
++        polls - route->sampleAt >= SIM_ROUTE_STALL_POLLS) {
++        float movedX = chr->prop->pos.x - route->sampleX;
++        float movedZ = chr->prop->pos.z - route->sampleZ;
++        if (chr->actiontype == ACT_GOPOS &&
++            movedX * movedX + movedZ * movedZ < 64.0f * 64.0f &&
++            dx * dx + dz * dz > 180.0f * 180.0f) {
++            route->blockedAmmo = nearest;
++            route->ammoBlockedUntil = polls + 360;
++            route->ammoTarget = NULL;
++            route->retryAfter = polls + 120;
++            return 0;
++        }
++        route->sampleAt = polls;
++        route->sampleX = chr->prop->pos.x;
++        route->sampleZ = chr->prop->pos.z;
++    }
++    if (polls >= route->retryAfter &&
++        (route->ammoTarget != nearest || chr->actiontype != ACT_GOPOS)) {
++        int ok = chrGoToPad(chr, pad, SPEED_SPRINT);
++        sysLogPrintf(LOG_NOTE, "sim probe: route to ammo at pad %d: %s",
++                     pad, ok ? "running" : "unreachable");
++        route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++        if (ok) {
++            route->ammoTarget = nearest;
++            route->goal = -1;
++            route->sampleAt = polls;
++            route->sampleX = chr->prop->pos.x;
++            route->sampleZ = chr->prop->pos.z;
++        } else {
++            route->blockedAmmo = nearest;
++            route->ammoBlockedUntil = polls + 360;
++            route->ammoTarget = NULL;
++        }
++    }
++    return 1;
++}
++
+ /* A wall/closed door blocks both target acquisition and damage. Character
+  * melee uses the same human MP health bridge as the firearm executor; thrown
+  * weapons still need separate projectile ownership before they can be used. */
+@@ -811,11 +937,19 @@
+     if (!chr->model || !chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return 0;
+     int item = gun && gun->weapon ? gun->weapon->weaponnum : ITEM_FIST;
+-    int throwingKnife = item == ITEM_THROWKNIFE;
+-    int remoteMine = item == ITEM_REMOTEMINE;
++    /* PD scores equipped weapon functions from inventory on each bot tick
++     * (n64decomp/perfect_dark at 169ed48bdcbfb3b568b028bd5bebb27680073514,
++     * src/game/botinv.c). The game adapter
++     * owns only these two currently executable throwable actions. */
++    int heldItem = item;
++    int throwingKnife = 0;
++    int remoteMine = 0;
++    int mineActive = route->mineObj &&
++                     mpSimEffectOwned(route->mineObj, MP_SIM_EFFECT_REMOTE_MINE);
+     const MpSimWeaponPolicy *policy = mpSimWeaponPolicy(simProbeWeaponKind(item));
+-    if (gun && !policy->firearm_ready && !throwingKnife && !remoteMine &&
+-        item != ITEM_KNIFE) {
++    if (gun && !mpSimWeaponPolicy(simProbeWeaponKind(heldItem))->firearm_ready &&
++        heldItem != ITEM_KNIFE && heldItem != ITEM_THROWKNIFE &&
++        heldItem != ITEM_REMOTEMINE) {
+         if (route->flashUntil) chrSetFiring(chr, GUNRIGHT, 0);
+         route->flashUntil = route->recoilUntil = 0;
+         return 0;
+@@ -865,9 +999,25 @@
+     const struct player *target = g_playerPointers[victim];
+     float dx = target->prop->pos.x - chr->prop->pos.x;
+     float dz = target->prop->pos.z - chr->prop->pos.z;
++    float range = sqrtf(dx * dx + dz * dz);
++    /* The visible target, not the prior frame's provisional search radius,
++     * decides whether an inventory action is appropriate. */
++    if (mpSimPreferRemoteMine(route->remoteAmmo, mineActive, range)) {
++        item = ITEM_REMOTEMINE;
++        remoteMine = 1;
++        throwingKnife = 0;
++    } else if (mpSimPreferKnife(route->knifeAmmo, gun != NULL, range)) {
++        item = ITEM_THROWKNIFE;
++        throwingKnife = 1;
++        remoteMine = 0;
++    } else {
++        item = heldItem;
++        throwingKnife = remoteMine = 0;
++    }
++    policy = mpSimWeaponPolicy(simProbeWeaponKind(item));
+     float levelDiff = target->prop->pos.y - chr->prop->pos.y;
+-    int slap = mpSimShouldSlap(sqrtf(dx * dx + dz * dz), levelDiff,
+-                               gun && policy->firearm_ready);
++    int slap = mpSimShouldSlap(range, levelDiff,
++                               gun && mpSimWeaponPolicy(simProbeWeaponKind(heldItem))->firearm_ready);
+     float dy = target->prop->pos.y - (chr->prop->pos.y + 30.0f);
+     float elevation = atan2f(dy, sqrtf(dx * dx + dz * dz));
+     if (elevation > 0.45f) elevation = 0.45f;
+@@ -875,7 +1025,7 @@
+     /* Let the game's standing turn state own the body heading. Directly
+      * writing setsubroty here competed with animation/route rotation and
+      * made the character spin continuously. */
+-    int closeEngagement = slap ||
++    int closeEngagement = slap || throwingKnife ||
+         (remoteMine ? (nearest >= 350.0f * 350.0f &&
+                        nearest <= 750.0f * 750.0f) :
+          nearest < policy->hold_range * policy->hold_range);
+@@ -890,11 +1040,11 @@
+             chr->act_stand.face_entityid = facing;
+         }
+     }
+-    if (!gun && !slap) return closeEngagement;
++    if (!gun && !slap && !throwingKnife && !remoteMine) return closeEngagement;
+ 
+     /* chrUpdateAimProperties interpolates this target into the right-arm
+      * rotation used by chrRender. */
+-    if (gun && !slap) {
++    if (gun && !slap && !throwingKnife && !remoteMine) {
+         chr->aimendrshoulder = elevation +
+                                 (polls < route->recoilUntil ? 0.18f : 0.0f);
+         chr->aimendcount = 6;
+@@ -909,7 +1059,8 @@
+         (remoteMine && closeEngagement && !route->mineObj)) {
+         ObjectRecord *thrown = simProbeThrow(chr, item, target);
+         route->nextShot = polls + policy->shot_interval;
+-        if (thrown && remoteMine) route->mineObj = thrown;
++        if (thrown && remoteMine) { route->mineObj = thrown; --route->remoteAmmo; }
++        if (thrown && throwingKnife) --route->knifeAmmo;
+         return closeEngagement;
+     }
+     if (!policy->firearm_ready && !slap) return closeEngagement;
+@@ -959,7 +1110,8 @@
+ 
+ /* GoldenEye owns route traversal, collision and doors. Periodically update
+  * the destination when the closest living player changes position. */
+-static void simProbeWalk(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
++static void simProbeWalk(ChrRecord *chr, unsigned polls, SimProbeRoute *route,
++                          SimProbePickupChoice pickup)
+ {
+     int goal = -1;
+     float best = 1.0e30f;
+@@ -969,8 +1121,21 @@
+     if (!chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_GOPOS && chr->actiontype != ACT_STAND)) return;
+ 
+-    if (simProbeSeekWeapon(chr, polls, route)) return;
+-    if (simProbeSeekArmour(chr, polls, route)) return;
++    if (pickup.kind != route->goalKind) {
++        route->goal = -1;
++        route->retryAfter = polls;
++        route->sampleAt = 0;
++        route->weaponTarget = route->armourTarget = route->ammoTarget = NULL;
++        route->goalKind = pickup.kind;
++        sysLogPrintf(LOG_NOTE, "sim probe: goal %d at pad %d",
++                     pickup.kind, pickup.prop ? pickup.prop->obj->pad : -1);
++    }
++    if (pickup.kind == MP_SIM_GOAL_WEAPON &&
++        simProbeSeekWeapon(chr, polls, route, pickup.prop)) return;
++    if (pickup.kind == MP_SIM_GOAL_ARMOUR &&
++        simProbeSeekArmour(chr, polls, route, pickup.prop)) return;
++    if (pickup.kind == MP_SIM_GOAL_AMMO && pickup.prop &&
++        simProbeSeekAmmo(chr, polls, route, pickup.prop)) return;
+ 
+     if (!route->sampleAt) {
+         route->sampleAt = polls;
+@@ -1105,8 +1270,12 @@
+                 }
+             }
+             if (navReady && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
++                SimProbePickupChoice pickup = simProbeChoosePickup(chr, route, probe->polls);
+                 simProbeRemoteDetonate(chr, route);
+-                if (simProbeCombat(chr, probe->polls, route)) {
++                if (simProbeCombat(chr, probe->polls, route) &&
++                    (pickup.kind == MP_SIM_GOAL_PURSUIT ||
++                     (pickup.kind == MP_SIM_GOAL_AMMO &&
++                      (route->knifeAmmo > 0 || route->remoteAmmo > 0)))) {
+                     if (!route->engaging)
+                         sysLogPrintf(LOG_NOTE, "sim probe: close engagement; facing player");
+                     route->engaging = 1;
+@@ -1121,7 +1290,7 @@
+                     route->sampleAt = 0;
+                     sysLogPrintf(LOG_NOTE, "sim probe: resuming pursuit");
+                 }
+-                simProbeWalk(chr, probe->polls, route);
++                simProbeWalk(chr, probe->polls, route, pickup);
+             }
+             return;
+         }
+diff --git a/src/game/mp_sim_policy.h b/src/game/mp_sim_policy.h
+--- a/src/game/mp_sim_policy.h
++++ b/src/game/mp_sim_policy.h
+@@ -26,10 +26,33 @@
+     int firearm_ready;
+ } MpSimWeaponPolicy;
+ 
++/* The strategic choice is separate from the weapon used while carrying it
++ * out. A bot can collect mine ammo while keeping its firearm equipped. */
++typedef enum MpSimGoalKind {
++    MP_SIM_GOAL_PURSUIT,
++    MP_SIM_GOAL_WEAPON,
++    MP_SIM_GOAL_ARMOUR,
++    MP_SIM_GOAL_AMMO
++} MpSimGoalKind;
++
++typedef struct MpSimGoalChoice {
++    MpSimGoalKind kind;
++    float score;
++} MpSimGoalChoice;
++
+ const MpSimWeaponPolicy *mpSimWeaponPolicy(MpSimWeaponKind kind);
+ /* Higher values are better. Item-specific gates in the game adapter keep
+  * timed/proximity mines and unsupported explosives out of pickup selection. */
+ float mpSimPickupScore(MpSimWeaponKind kind, float distance);
++float mpSimAmmoPickupScore(MpSimWeaponKind kind, int held, int capacity,
++                           float distance);
++/* A goal persists until a new candidate improves on it appreciably. */
++MpSimGoalChoice mpSimChooseGoal(const MpSimGoalChoice *candidates, int count,
++                                MpSimGoalKind current);
++/* Select an available action without assuming the right hand holds every
++ * weapon in the inventory. Returned item is supplied by the game adapter. */
++int mpSimPreferKnife(int knives, int has_firearm, float distance);
++int mpSimPreferRemoteMine(int mines, int mine_active, float distance);
+ /* The unarmed Simulant fights when cornered; an armed one may slap only at
+  * extreme close range. Vertical separation must never produce a melee hit. */
+ int mpSimShouldSlap(float horizontal_distance, float vertical_distance,

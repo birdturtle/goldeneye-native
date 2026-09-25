@@ -95,6 +95,12 @@ else
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0041-background-resource-registration.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0042-simulant-weapon-policy.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0043-simulant-melee-combat.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0044-simulant-armour.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0045-simulant-projectiles.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0046-simulant-knife-hitparts.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0047-simulant-goals-ammo.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0048-simulant-projectile-contact.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0049-simulant-combat-movement.patch" )
     echo "cloned and patched"
 fi
 

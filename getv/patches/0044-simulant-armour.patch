@@ -1,0 +1,313 @@
+diff --git a/src/game/mp_combat.c b/src/game/mp_combat.c
+--- a/src/game/mp_combat.c
++++ b/src/game/mp_combat.c
+@@ -13,6 +13,7 @@
+ #include "player.h"
+ #include "propobj.h"
+ #include <stdio.h>
++#include <stdlib.h>
+ #define sysLogPrintf(level, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0)
+ #include "joy.h"
+ 
+@@ -22,6 +23,7 @@
+ typedef struct MpCombatLife {
+     MpRosterRef life;
+     MpRosterRef attacker;
++    float armour;
+     int credited;
+ } MpCombatLife;
+ 
+@@ -46,11 +48,55 @@
+         entry->chrnum != chr->chrnum) return;
+     s_lives[slot].life = mpRosterRefForSlot(slot);
+     s_lives[slot].attacker = (MpRosterRef){0, 0, -1};
++    s_lives[slot].armour = 0.0f;
+     s_lives[slot].credited = 0;
+     /* Character damage is in eighths of a player's normalized health.
+      * Ignore campaign difficulty/007 modifiers in a multiplayer match. */
+     chr->maxdamage = MP_COMBAT_ACTOR_HEALTH;
+     chr->damage = 0.0f;
++}
++
++int mpCombatIsSimulant(struct ChrRecord *chr)
++{
++    int slot;
++    if (!chr || (slot = mpRosterSlotForChr(chr->chrnum)) < 0) return 0;
++    return mpCombatValidActor(&s_lives[slot], slot);
++}
++
++float mpCombatSimulantArmour(struct ChrRecord *chr)
++{
++    int slot;
++    if (!mpCombatIsSimulant(chr)) return 0.0f;
++    slot = mpRosterSlotForChr(chr->chrnum);
++    return s_lives[slot].armour;
++}
++
++int mpCombatPickupSimulantArmour(struct ChrRecord *chr, float normalized_amount)
++{
++    int slot;
++    float pickup = mpSimArmourFromPickup(normalized_amount);
++    if (!mpCombatIsSimulant(chr) || pickup <= 0.0f) return 0;
++    slot = mpRosterSlotForChr(chr->chrnum);
++    if (pickup <= s_lives[slot].armour) return 0;
++    /* Like bondviewAddCurrentPlayerArmor, replace the remaining protection.
++     * Never set chr->damage negative: that would erase existing wounds. */
++    s_lives[slot].armour = pickup;
++    g_playerPlayerData[slot].body_armor_pickups += normalized_amount;
++    return 1;
++}
++
++float mpCombatAbsorbSimulantDamage(struct ChrRecord *chr, float damage)
++{
++    int slot;
++    if (!mpCombatIsSimulant(chr)) return damage;
++    slot = mpRosterSlotForChr(chr->chrnum);
++    float before = s_lives[slot].armour;
++    float toHealth = mpSimAbsorbDamage(&s_lives[slot].armour, damage);
++    if (before > 0.0f && getenv("GETV_SIM_ARMOUR_TRACE"))
++        sysLogPrintf(LOG_NOTE, "sim armour: slot=%d incoming=%.2f absorbed=%.2f remaining=%.2f healthDamage=%.2f",
++                     slot, (double)damage, (double)(damage - toHealth),
++                     (double)s_lives[slot].armour, (double)toHealth);
++    return toHealth;
+ }
+ 
+ void mpCombatNoteSimulantHit(struct ChrRecord *chr, int human_index)
+diff --git a/src/game/mp_combat.h b/src/game/mp_combat.h
+--- a/src/game/mp_combat.h
++++ b/src/game/mp_combat.h
+@@ -5,16 +5,20 @@
+ 
+ struct ChrRecord;
+ 
+-/* MP players have one normalized health unit. Character weapon damage is
+- * eight times the normalized player damage, so a full-health Simulant has
+- * eight actor damage units. Negative actor damage represents armor. */
+-#define MP_COMBAT_ACTOR_HEALTH 8.0f
++/* MP players have one normalized health unit; character damage uses eight
++ * units. Armour is tracked per roster life, independent of chr->damage. */
++#include "mp_sim_vitals.h"
++#define MP_COMBAT_ACTOR_HEALTH MP_SIM_ACTOR_HEALTH
+ 
+ void mpCombatSpawnSimulant(int slot, struct ChrRecord *chr);
+ void mpCombatNoteSimulantHit(struct ChrRecord *chr, int human_index);
+ int mpCombatSimulantKeepsMoving(struct ChrRecord *chr);
+ int mpCombatShouldCountNativeKill(struct ChrRecord *chr);
+ void mpCombatSimulantDied(int slot, struct ChrRecord *chr);
++int mpCombatIsSimulant(struct ChrRecord *chr);
++float mpCombatSimulantArmour(struct ChrRecord *chr);
++int mpCombatPickupSimulantArmour(struct ChrRecord *chr, float normalized_amount);
++float mpCombatAbsorbSimulantDamage(struct ChrRecord *chr, float damage);
+ void mpCombatDamageHuman(int attacker_slot, int victim_human, float damage,
+                          float direction_x, float direction_z);
+ 
+diff --git a/src/game/chraction.c b/src/game/chraction.c
+--- a/src/game/chraction.c
++++ b/src/game/chraction.c
+@@ -2709,7 +2709,11 @@
+ #    ifdef XBLA
+             if (!cheatIsActive(76))
+ #    endif
++#ifdef GE_PORT_NATIVE
++                self->damage += mpCombatAbsorbSimulantDamage(self, damageToCause);
++#else
+                 self->damage += damageToCause;
++#endif
+ 
+             if (self->damage < 0.0f)
+             {
+@@ -2799,10 +2803,18 @@
+ #ifdef GE_PORT_NATIVE
+     mpCombatNoteSimulantHit(self, -1);
+ #endif
+-    self->damage += damage;
++    f32 damageToHealth = damage;
++#ifdef GE_PORT_NATIVE
++    damageToHealth = mpCombatAbsorbSimulantDamage(self, damage);
++#endif
++    self->damage += damageToHealth;
+     self->chrflags |= CHRFLAG_WAS_DAMAGED;
+ 
+-    if (self->damage > 0.0f)
++    if (self->damage > 0.0f
++#ifdef GE_PORT_NATIVE
++        && (!mpCombatIsSimulant(self) || damageToHealth > 0.0f)
++#endif
++        )
+     {
+         self->damage = self->maxdamage;
+ 
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -14,6 +14,7 @@
+ #include "mp_combat.h"
+ #include "mp_nav_graph.h"
+ #include "mp_sim_policy.h"
++#include "mp_sim_vitals.h"
+ #include "player.h"
+ #include "chrobjdata.h"
+ #include "chr.h"
+@@ -62,6 +63,9 @@
+     PropRecord *weaponTarget;
+     PropRecord *blockedWeapon;
+     unsigned weaponBlockedUntil;
++    PropRecord *armourTarget;
++    PropRecord *blockedArmour;
++    unsigned armourBlockedUntil;
+     int noWeaponLogged;
+     int engaging;
+     unsigned nextShot;
+@@ -572,6 +576,126 @@
+     return 1;
+ }
+ 
++/* Match the human pickup rules: only a live stage vest offering more armour
++ * than the current pool is useful. Respawning objects remain stage-owned. */
++static int simProbeUsableArmour(PropRecord *prop, float current)
++{
++    if (!prop || !(prop->flags & PROPFLAG_ENABLED) ||
++        prop->type != PROP_TYPE_OBJ || prop->parent || prop->timetoregen > 0 ||
++        !prop->stan || !prop->obj || prop->obj->prop != prop ||
++        prop->obj->type != PROPDEF_ARMOUR ||
++        !(prop->obj->state & PROPSTATE_RESPAWN) ||
++        (prop->obj->runtime_bitflags & RUNTIMEBITFLAG_00000800) ||
++        (prop->obj->flags & (PROPFLAG_UNCOLLECTABLE | PROPFLAG_ASSIGNEDTOCHR |
++                             PROPFLAG_INSIDEANOTHEROBJ))) return 0;
++    return mpSimArmourFromPickup(((BodyArmourRecord *)prop->obj)->amount) > current;
++}
++
++static int simProbeSeekArmour(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
++{
++    PropRecord *nearest = NULL, *locked = NULL;
++    float current = mpCombatSimulantArmour(chr);
++    float best = 0.0f, lockedScore = 0.0f;
++    int seen = 0;
++    for (PropRecord *prop = g_ActivePropsHead; prop && seen++ < MAX_PROPS;
++         prop = prop->next) {
++        if (!simProbeUsableArmour(prop, current) ||
++            (prop == route->blockedArmour && polls < route->armourBlockedUntil))
++            continue;
++        float dx = prop->pos.x - chr->prop->pos.x;
++        float dy = prop->pos.y - chr->prop->pos.y;
++        float dz = prop->pos.z - chr->prop->pos.z;
++        float distance = sqrtf(dx * dx + dz * dz + 16.0f * dy * dy);
++        float score = mpSimArmourPickupScore(current,
++            mpSimArmourFromPickup(((BodyArmourRecord *)prop->obj)->amount), distance);
++        if (prop == route->armourTarget) { locked = prop; lockedScore = score; }
++        if (score > best) { best = score; nearest = prop; }
++    }
++    if (locked && lockedScore >= best * 0.85f) nearest = locked;
++    /* Ignore a sliver of protection across the map; a full nearby vest
++     * easily clears this threshold. */
++    if (best < 35.0f) nearest = NULL;
++    if (!nearest) {
++        if (route->armourTarget) {
++            route->goal = -1;
++            route->retryAfter = polls;
++        }
++        route->armourTarget = NULL;
++        return 0;
++    }
++    float dx = nearest->pos.x - chr->prop->pos.x;
++    float dy = nearest->pos.y - chr->prop->pos.y;
++    float dz = nearest->pos.z - chr->prop->pos.z;
++    if (dx * dx + dz * dz < 135.0f * 135.0f &&
++        dy * dy < 150.0f * 150.0f) {
++        StandTile *tile = chr->prop->stan;
++        chrSetMoving(chr, 0);
++        int reachable = stanTestLineUnobstructed(&tile, chr->prop->pos.x,
++            chr->prop->pos.z, nearest->pos.x, nearest->pos.z,
++            CDTYPE_OBJS | CDTYPE_DOORS | CDTYPE_PATHBLOCKER | CDTYPE_AIOPAQUE,
++            chr->chrheight - 20.0f, chr->chrheight - 20.0f, 0.0f, 1.0f);
++        chrSetMoving(chr, 1);
++        if (reachable && tile == nearest->stan &&
++            mpCombatPickupSimulantArmour(chr,
++                ((BodyArmourRecord *)nearest->obj)->amount)) {
++            int pad = nearest->obj->pad;
++            propExecuteTickOperation(nearest, TICKOP_FREE);
++            sysLogPrintf(LOG_NOTE, "sim probe: picked up armour at pad %d (%.2f); world pickup respawning",
++                         pad, (double)(mpCombatSimulantArmour(chr) / MP_SIM_ACTOR_HEALTH));
++            route->armourTarget = NULL;
++            route->goal = -1;
++            route->retryAfter = polls + 30;
++            return 1;
++        }
++        /* A close vest behind a wall is not a collectible vest. Give the
++         * route solver another goal instead of camping beside that wall. */
++        route->blockedArmour = nearest;
++        route->armourBlockedUntil = polls + 360;
++        route->armourTarget = NULL;
++        route->retryAfter = polls;
++        return 0;
++    }
++    if (route->armourTarget == nearest &&
++        polls - route->sampleAt >= SIM_ROUTE_STALL_POLLS) {
++        float movedX = chr->prop->pos.x - route->sampleX;
++        float movedZ = chr->prop->pos.z - route->sampleZ;
++        if (chr->actiontype == ACT_GOPOS &&
++            movedX * movedX + movedZ * movedZ < 64.0f * 64.0f &&
++            dx * dx + dz * dz > 180.0f * 180.0f) {
++            route->blockedArmour = nearest;
++            route->armourBlockedUntil = polls + 360;
++            route->armourTarget = NULL;
++            route->retryAfter = polls + 120;
++            route->sampleAt = polls;
++            return 0;
++        }
++        route->sampleAt = polls;
++        route->sampleX = chr->prop->pos.x;
++        route->sampleZ = chr->prop->pos.z;
++    }
++    if (polls >= route->retryAfter &&
++        (route->armourTarget != nearest || chr->actiontype != ACT_GOPOS)) {
++        int pad = nearest->obj->pad;
++        int ok = chrGoToPad(chr, pad, SPEED_SPRINT);
++        sysLogPrintf(LOG_NOTE, "sim probe: route to armour at pad %d: %s",
++                     pad, ok ? "running" : "unreachable");
++        route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++        if (ok) {
++            route->armourTarget = nearest;
++            route->goal = -1;
++            route->sampleAt = polls;
++            route->sampleX = chr->prop->pos.x;
++            route->sampleZ = chr->prop->pos.z;
++        } else {
++            route->blockedArmour = nearest;
++            route->armourBlockedUntil = polls + 360;
++            route->armourTarget = NULL;
++            return 0;
++        }
++    }
++    return 1;
++}
++
+ /* A wall/closed door blocks both target acquisition and damage. Character
+  * melee uses the same human MP health bridge as the firearm executor; thrown
+  * weapons still need separate projectile ownership before they can be used. */
+@@ -726,6 +850,7 @@
+         (chr->actiontype != ACT_GOPOS && chr->actiontype != ACT_STAND)) return;
+ 
+     if (simProbeSeekWeapon(chr, polls, route)) return;
++    if (simProbeSeekArmour(chr, polls, route)) return;
+ 
+     if (!route->sampleAt) {
+         route->sampleAt = polls;
+diff --git a/src/game/mp_sim_vitals.h b/src/game/mp_sim_vitals.h
+new file mode 100644
+--- /dev/null
++++ b/src/game/mp_sim_vitals.h
+@@ -0,0 +1,13 @@
++#ifndef GE_MP_SIM_VITALS_H
++#define GE_MP_SIM_VITALS_H
++
++/* Multiplayer armour pickups are normalized to one player health unit. The
++ * character damage path uses eight units for that same amount of health. */
++#define MP_SIM_ACTOR_HEALTH 8.0f
++
++float mpSimArmourPickupScore(float current, float pickup, float distance);
++float mpSimArmourFromPickup(float normalized_amount);
++/* Consume armour first and return only the damage that reaches health. */
++float mpSimAbsorbDamage(float *armour, float incoming);
++
++#endif

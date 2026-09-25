@@ -319,6 +319,42 @@ else
   ( cd "$DECOMP" && git apply "$HERE/getv/patches/0043-simulant-melee-combat.patch" ) \
     || die "0043-simulant-melee-combat.patch failed to apply"
 fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0044-simulant-armour.patch" ) 2>/dev/null; then
+  echo "0044-simulant-armour.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0044-simulant-armour.patch" ) \
+    || die "0044-simulant-armour.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0045-simulant-projectiles.patch" ) 2>/dev/null; then
+  echo "0045-simulant-projectiles.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0045-simulant-projectiles.patch" ) \
+    || die "0045-simulant-projectiles.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0046-simulant-knife-hitparts.patch" ) 2>/dev/null; then
+  echo "0046-simulant-knife-hitparts.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0046-simulant-knife-hitparts.patch" ) \
+    || die "0046-simulant-knife-hitparts.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0047-simulant-goals-ammo.patch" ) 2>/dev/null; then
+  echo "0047-simulant-goals-ammo.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0047-simulant-goals-ammo.patch" ) \
+    || die "0047-simulant-goals-ammo.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0048-simulant-projectile-contact.patch" ) 2>/dev/null; then
+  echo "0048-simulant-projectile-contact.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0048-simulant-projectile-contact.patch" ) \
+    || die "0048-simulant-projectile-contact.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0049-simulant-combat-movement.patch" ) 2>/dev/null; then
+  echo "0049-simulant-combat-movement.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0049-simulant-combat-movement.patch" ) \
+    || die "0049-simulant-combat-movement.patch failed to apply"
+fi
 
 # The ROM's SHA-1, from whichever tool this machine actually has.
 #

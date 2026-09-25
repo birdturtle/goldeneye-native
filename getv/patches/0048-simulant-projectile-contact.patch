@@ -1,0 +1,146 @@
+diff --git a/src/game/propobj.c b/src/game/propobj.c
+--- a/src/game/propobj.c
++++ b/src/game/propobj.c
+@@ -1334,7 +1334,7 @@
+                     }
+                 }
+             }
+-            if (bestedge > 0)
++            if (bestedge >= 0)
+             {
+                 next = (bestedge + 1) % numedges;
+                 edgeStart3d.x = polygon->points[bestedge].x;
+@@ -1685,6 +1685,21 @@
+                     {
+                         found_collision = TRUE;
+                     }
++#ifdef GE_PORT_NATIVE
++                    else if (iterprop->type == PROP_TYPE_VIEWER &&
++                             !(iterprop->flags & PROPFLAG_ONSCREEN) &&
++                             ignoreProp && ignoreProp->obj &&
++                             mpSimEffectOwned(ignoreProp->obj, MP_SIM_EFFECT_KNIFE) &&
++                             sub_GAME_7F041400(iterprop, worldRayStart, worldRayEnd,
++                                 &sp98, outHitPos, outHitNormal, &spa8))
++                    {
++                        /* The local first-person body is not rendered as an
++                         * onscreen chr. Its native collision polygon is still
++                         * valid, so use it for a Simulant knife that missed the
++                         * rendered-model test. */
++                        found_collision = TRUE;
++                    }
++#endif
+                 }
+                 else if (iterprop->type == PROP_TYPE_VIEWER && g_playerPointers[getPlayerPointerIndex(iterprop)]->field_AC)
+                 {
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -77,6 +77,7 @@
+     ObjectRecord *mineObj; /* identity checked in the effect sidecar before dereference */
+     int noWeaponLogged;
+     int engaging;
++    unsigned retreatRetryAfter;
+     unsigned nextShot;
+     unsigned flashUntil;
+     unsigned recoilUntil;
+@@ -722,25 +723,72 @@
+         return;
+     }
+     if (mpRosterResolve(mpSimEffectOwner(mine, MP_SIM_EFFECT_REMOTE_MINE)) < 0 ||
+-        !mine->prop || ((WeaponObjRecord *)mine)->timer != 1 ||
+-        (mine->runtime_bitflags & RUNTIMEBITFLAG_HASPROJECTILE)) return;
++        !mine->prop) return;
+     float bx = chr->prop->pos.x - mine->runtime_pos.x;
+     float bz = chr->prop->pos.z - mine->runtime_pos.z;
+-    if (bx * bx + bz * bz < 330.0f * 330.0f) return;
++    /* A mine settled on the floor can retain HASPROJECTILE. Its AIRBORNE
++     * flag, cleared by objSettle, is the actual landing condition. */
++    int airborne = (mine->runtime_bitflags & RUNTIMEBITFLAG_HASPROJECTILE) &&
++                   (mine->projectile->flags & PROJECTILEFLAG_AIRBORNE);
+     for (int i = 0; i < getPlayerCount() && i < 4; ++i) {
+         const struct player *player = g_playerPointers[i];
+         if (!player || !player->prop || player->bonddead) continue;
+         float dx = player->prop->pos.x - mine->runtime_pos.x;
+         float dy = player->prop->pos.y - mine->runtime_pos.y;
+         float dz = player->prop->pos.z - mine->runtime_pos.z;
+-        if (dx * dx + dz * dz < 240.0f * 240.0f &&
+-            dy * dy < 120.0f * 120.0f) {
++        if (mpSimRemoteDetonationAllowed(((WeaponObjRecord *)mine)->timer,
++                airborne, bx * bx + bz * bz, dx * dx + dz * dz, dy * dy)) {
+             ((WeaponObjRecord *)mine)->timer = 0; /* native weapon tick creates the blast */
+             route->mineObj = NULL;
+             sysLogPrintf(LOG_NOTE, "sim probe: detonated remote mine near player %d", i + 1);
+             return;
+         }
+     }
++}
++
++/* A remote mine needs separation before it is safe to trigger. Choose a
++ * reachable native waypoint outside the blast margin rather than continuing
++ * pursuit into the planted mine. Normal pickup/combat goals resume as soon as
++ * the character is clear. */
++static int simProbeRetreatFromMine(ChrRecord *chr, unsigned polls,
++                                   SimProbeRoute *route)
++{
++    ObjectRecord *mine = route->mineObj;
++    waypoint *start;
++    int goal = -1;
++    float best = 1.0e30f;
++    if (!mine || !mpSimEffectOwned(mine, MP_SIM_EFFECT_REMOTE_MINE) ||
++        !mine->prop || ((WeaponObjRecord *)mine)->timer != 1 ||
++        ((mine->runtime_bitflags & RUNTIMEBITFLAG_HASPROJECTILE) &&
++         (mine->projectile->flags & PROJECTILEFLAG_AIRBORNE))) return 0;
++    float bx = chr->prop->pos.x - mine->runtime_pos.x;
++    float bz = chr->prop->pos.z - mine->runtime_pos.z;
++    if (bx * bx + bz * bz >= 330.0f * 330.0f) return 0;
++    if (polls < route->retreatRetryAfter) return chr->actiontype == ACT_GOPOS;
++    route->retreatRetryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++    start = chrlvStanPathRelated(&chr->prop->pos, chr->prop->stan);
++    if (!start) return 0;
++    for (int i = 0; i < s_navCount; ++i) {
++        PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[i].padID];
++        float mx = pad->pos.x - mine->runtime_pos.x;
++        float mz = pad->pos.z - mine->runtime_pos.z;
++        float dx = pad->pos.x - chr->prop->pos.x;
++        float dz = pad->pos.z - chr->prop->pos.z;
++        if (&s_navWaypoints[i] == start ||
++            mx * mx + mz * mz < 430.0f * 430.0f ||
++            (simulantProbeGeneratedNavActive() &&
++             !mpNavGraphReachable(&s_generatedGraph, start->padID,
++                                  s_navWaypoints[i].padID))) continue;
++        float distance = dx * dx + dz * dz;
++        if (distance < best) { best = distance; goal = i; }
++    }
++    if (goal < 0 || !chrGoToPad(chr, s_navWaypoints[goal].padID,
++                                SPEED_SPRINT)) return 0;
++    route->goal = -1;
++    route->engaging = 0;
++    sysLogPrintf(LOG_NOTE, "sim probe: retreating from armed remote mine to pad %d",
++                 s_navWaypoints[goal].padID);
++    return 1;
+ }
+ 
+ /* Match the human pickup rules: only a live stage vest offering more armour
+@@ -1272,6 +1320,7 @@
+             if (navReady && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
+                 SimProbePickupChoice pickup = simProbeChoosePickup(chr, route, probe->polls);
+                 simProbeRemoteDetonate(chr, route);
++                if (simProbeRetreatFromMine(chr, probe->polls, route)) return;
+                 if (simProbeCombat(chr, probe->polls, route) &&
+                     (pickup.kind == MP_SIM_GOAL_PURSUIT ||
+                      (pickup.kind == MP_SIM_GOAL_AMMO &&
+diff --git a/src/game/mp_sim_policy.h b/src/game/mp_sim_policy.h
+--- a/src/game/mp_sim_policy.h
++++ b/src/game/mp_sim_policy.h
+@@ -53,6 +53,11 @@
+  * weapon in the inventory. Returned item is supplied by the game adapter. */
+ int mpSimPreferKnife(int knives, int has_firearm, float distance);
+ int mpSimPreferRemoteMine(int mines, int mine_active, float distance);
++/* A settled remote mine may retain its native projectile allocation. Only
++ * AIRBORNE means it has not yet landed; preserve the blast safety spacing. */
++int mpSimRemoteDetonationAllowed(int timer, int airborne,
++                                 float bot_distance_sq, float player_distance_sq,
++                                 float vertical_distance_sq);
+ /* The unarmed Simulant fights when cornered; an armed one may slap only at
+  * extreme close range. Vertical separation must never produce a melee hit. */
+ int mpSimShouldSlap(float horizontal_distance, float vertical_distance,

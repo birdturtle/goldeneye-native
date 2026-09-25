@@ -106,6 +106,43 @@ bot-to-human multiplayer damage and scoring bridge. It plays a brief native
 character hand animation and positional punch sound. No projectile path is
 enabled by this patch.
 
+`0044-simulant-armour.patch` gives each Simulant incarnation a separate armour
+pool. Native character hits consume that pool before accumulating health damage,
+while stage-owned body armour remains a respawning multiplayer pickup. The bot
+seeks usable armour according to the current goal policy; the later goal
+arbiter allows a useful pickup to interrupt a close engagement. The arithmetic and pickup
+ranking are tested without game assets in `test_mp_sim_vitals.c`.
+
+`0045-simulant-projectiles.patch` connects thrown knives and remote mines to
+native projectile movement and explosion effects. A sidecar keyed by object and
+roster life owns damage and scoring without using a human player index. Mine
+detonation is decided by the Simulant when the planted mine is armed, a human
+is close, and the Simulant is outside the blast. Old-life projectiles remain
+tagged until freed but cannot deal or credit damage to the respawned actor.
+The sidecar's lifetime checks have ROM-free coverage in `test_mp_sim_effects.c`.
+`0046-simulant-knife-hitparts.patch` includes the game's hit-part definitions
+where the new knife damage bridge uses them.
+
+`0047-simulant-goals-ammo.patch` moves weapon, armour, and selected-set ammo
+pickup ranking into one goal choice. It collects stage multi-ammo crates for
+the Simulant's per-life throwing knife and remote mine supply, then lets the
+combat action use those quantities without replacing an equipped firearm.
+The decision and inventory thresholds are tested in `test_mp_sim_policy.c`.
+
+`0048-simulant-projectile-contact.patch` tests the human player's native
+collision polygon when their first-person body is not rendered and a Simulant
+knife misses the model collision. It also lets an armed, settled remote mine
+detonate while its projectile allocation remains attached; the AIRBORNE flag
+guards against detonating it in flight. An unsafe bot retreats to a reachable
+pad outside the blast margin. The mine safety rule is tested without game assets
+in `test_mp_sim_policy.c`.
+
+`0049-simulant-combat-movement.patch` replaces the close-engagement stop with
+distance modes and lateral waypoint selection. Native character routes handle
+collision and doors; the bot may fire while moving and tracks a visible target
+with its arm. If no useful waypoint can be routed, it stands and turns, then
+tries again. The distance transition and hysteresis live in `mp_sim_policy.c`.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them

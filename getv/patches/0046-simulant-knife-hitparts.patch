@@ -1,0 +1,11 @@
+diff --git a/src/game/mp_combat.c b/src/game/mp_combat.c
+--- a/src/game/mp_combat.c
++++ b/src/game/mp_combat.c
+@@ -3,6 +3,7 @@
+ #include "mp_combat.h"
+ #include "mp_roster.h"
+ #include "mp_sim_effects.h"
++#include <bondaicommands.h>
+ #include "bondview.h"
+ #include "bondinv.h"
+ #include "chrobjdata.h"

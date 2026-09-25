@@ -441,6 +441,7 @@ formality - it is what makes the table in section 3 verifiable by someone who wa
 | stb_image v2.19 | `nothings/stb`, Sean Barrett | `getv/port/include/stb/stb_image.h`, licence notice intact in-file. |
 | stb_truetype | `nothings/stb`, Sean Barrett | `getv/port/include/stb_truetype.h`, licence notice intact in-file. Added with the real-font text overlay. |
 | Typed byteswap with fail-loud default (`GE_SWAP`) | `perfect-dark-pc-port/perfect_dark` @ `514bf7a`, `port/include/preprocess/common.h` (`PD_SWAPPED_VAL`/`PD_SWAP_VAL`). MIT, (c) 2022 Ryan Dwyer. | `getv/port/include/ge_typed_swap.h`, own implementation of the `_Generic`-dispatch technique, notice and cite in the file header. |
+| Simulant combat distance modes | `n64decomp/perfect_dark` @ `169ed48bdcbfb3b568b028bd5bebb27680073514`, `src/game/botcmd.c` (MIT). | `getv/port/src/mp_sim_policy.c` selects advance, retreat, or orbit with hysteresis; `getv/patches/0049-simulant-combat-movement.patch` uses native GoldenEye waypoint routes. Thresholds and tactical waypoint scoring are new. |
 
 ### Exact upstream revisions
 

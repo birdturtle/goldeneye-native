@@ -1,0 +1,535 @@
+diff --git a/src/game/mp_combat.c b/src/game/mp_combat.c
+--- a/src/game/mp_combat.c
++++ b/src/game/mp_combat.c
+@@ -2,6 +2,7 @@
+  * See getv/port/SIMULANT_SOURCE_LICENSE.txt. */
+ #include "mp_combat.h"
+ #include "mp_roster.h"
++#include "mp_sim_effects.h"
+ #include "bondview.h"
+ #include "bondinv.h"
+ #include "chrobjdata.h"
+@@ -13,6 +14,7 @@
+ #include "player.h"
+ #include "propobj.h"
+ #include <stdio.h>
++#include <math.h>
+ #include <stdlib.h>
+ #define sysLogPrintf(level, ...) do { printf(__VA_ARGS__); printf("\n"); } while (0)
+ #include "joy.h"
+@@ -207,3 +209,32 @@
+     }
+     set_cur_player(previous);
+ }
++
++void mpCombatDamageHumanRef(MpRosterRef owner, int victim_human, float damage,
++                            float dx, float dz)
++{
++    /* A projectile from a previous life must not be credited to the actor
++     * occupying the same roster slot after respawn. */
++    if (mpRosterResolve(owner) == owner.slot)
++        mpCombatDamageHuman(owner.slot, victim_human, damage, dx, dz);
++}
++
++int mpCombatSimKnifeHit(const void *knife_obj, int victim_human, int hitpart,
++                        float dx, float dz)
++{
++    MpRosterRef owner;
++    float damage;
++    if (!mpSimEffectOwned(knife_obj, MP_SIM_EFFECT_KNIFE)) return 0;
++    owner = mpSimEffectOwner(knife_obj, MP_SIM_EFFECT_KNIFE);
++    damage = 0.125f * gunItemGetDestructionAmount(ITEM_THROWKNIFE);
++    if (hitpart == HIT_HEAD) damage *= 4.0f;
++    else if (hitpart == HIT_CHEST) damage *= 2.0f;
++    else if (hitpart == HIT_GENERALHALF) damage *= 0.5f;
++    else if (hitpart == HIT_GUN || hitpart == HIT_HAT) damage = 0.0f;
++    if (damage > 0.0f) {
++        float length = sqrtf(dx * dx + dz * dz);
++        if (length > 0.0f) { dx /= length; dz /= length; }
++        mpCombatDamageHumanRef(owner, victim_human, damage, dx, dz);
++    }
++    return 1;
++}
+diff --git a/src/game/mp_combat.h b/src/game/mp_combat.h
+--- a/src/game/mp_combat.h
++++ b/src/game/mp_combat.h
+@@ -3,6 +3,7 @@
+ #ifndef GE_MP_COMBAT_H
+ #define GE_MP_COMBAT_H
+ 
++#include "mp_roster.h"
+ struct ChrRecord;
+ 
+ /* MP players have one normalized health unit; character damage uses eight
+@@ -21,5 +22,9 @@
+ float mpCombatAbsorbSimulantDamage(struct ChrRecord *chr, float damage);
+ void mpCombatDamageHuman(int attacker_slot, int victim_human, float damage,
+                          float direction_x, float direction_z);
++void mpCombatDamageHumanRef(MpRosterRef owner, int victim_human,
++                            float damage, float direction_x, float direction_z);
++int mpCombatSimKnifeHit(const void *knife_obj, int victim_human, int hitpart,
++                        float direction_x, float direction_z);
+ 
+ #endif
+diff --git a/src/game/propobj.c b/src/game/propobj.c
+--- a/src/game/propobj.c
++++ b/src/game/propobj.c
+@@ -52,6 +52,10 @@
+ #include "tex.h"
+ #include "textrelated.h"
+ #include "vtxstore.h"
++#ifdef GE_PORT_NATIVE
++#include "mp_combat.h"
++#include "mp_sim_effects.h"
++#endif
+ 
+ #ifdef GE_PORT_NATIVE
+ /* GETV_DLCOLPROBE=1 counters -- global on purpose so `nm` proves the rebuild landed. */
+@@ -1027,6 +1031,9 @@
+ void objFree(ObjectRecord* obj, s32 freeprop, s32 canregen)
+ {
+     PropRecord *child;
++#ifdef GE_PORT_NATIVE
++    mpSimEffectForget(obj);
++#endif
+ 
+     if (obj->type == PROPDEF_AUTOGUN)
+     {
+@@ -3399,6 +3406,12 @@
+ 
+     prop_obj = prop->obj;
+     playernum = (prop_obj->runtime_bitflags & RUNTIMEBITFLAG_OWNER) >> RUNTIMEBITSHIFT_OWNER;
++#ifdef GE_PORT_NATIVE
++    MpRosterRef simOwner = mpSimEffectOwner(prop_obj, MP_SIM_EFFECT_REMOTE_MINE);
++    if (simOwner.slot < 0)
++        simOwner = mpSimEffectOwner(prop_obj, MP_SIM_EFFECT_CHAIN);
++    mpSimEffectSetPending(simOwner);
++#endif
+ 
+     if (prop->parent)
+     {
+@@ -3460,6 +3473,9 @@
+             (prop->flags & PROPFLAG_00000008) != 0);
+     }
+ 
++#ifdef GE_PORT_NATIVE
++    mpSimEffectSetPending((MpRosterRef){0, 0, -1});
++#endif
+ #if defined(VERSION_JP) || defined(VERSION_EU)
+     return ret;
+ #endif
+@@ -3564,7 +3580,11 @@
+         }
+         else if (weapon->weaponnum == ITEM_REMOTEMINE)
+         {
+-            if (g_RemoteMineOwnerTriggerFlag)
++            if (g_RemoteMineOwnerTriggerFlag
++#ifdef GE_PORT_NATIVE
++                && !mpSimEffectOwned(obj, MP_SIM_EFFECT_REMOTE_MINE)
++#endif
++               )
+             {
+                 owner_player_number = (obj->runtime_bitflags & RUNTIMEBITFLAG_OWNER) >> RUNTIMEBITSHIFT_OWNER;
+                 owner_player_as_bitflag = (1 << owner_player_number);
+@@ -4567,6 +4587,13 @@
+ 			
+ 		}
+ 	}
++#ifdef GE_PORT_NATIVE
++	/* A Simulant owns no player tick. The first shuffled human advances its
++	 * projectile once; all humans still get their ordinary collision view. */
++	if (mpSimEffectOwned(obj, MP_SIM_EFFECT_KNIFE) ||
++	    mpSimEffectOwned(obj, MP_SIM_EFFECT_REMOTE_MINE))
++		isSimOwner = get_player_position_in_shuffled(get_cur_playernum()) == 0;
++#endif
+ 
+     /**
+      * sp100 is a PropRecord* but is used to store a color here. It should really be two
+@@ -4773,13 +4800,42 @@
+ 
+ 						if (temp_v1_10->weaponnum == ITEM_THROWKNIFE)
+ 						{
+-							if ((playerProp2->type == PROP_TYPE_CHR) || (((playerProp2->type == PROP_TYPE_VIEWER) && (playerProp2->obj != NULL)) && (getPlayerPointerIndex(playerProp2) != get_cur_playernum())))
++                            s32 isSimKnife = 0;
++#ifdef GE_PORT_NATIVE
++                            isSimKnife = mpSimEffectOwned(obj, MP_SIM_EFFECT_KNIFE);
++#endif
++                            if (playerProp2->type == PROP_TYPE_CHR ||
++                                (playerProp2->type == PROP_TYPE_VIEWER && playerProp2->obj &&
++                                 (isSimKnife || getPlayerPointerIndex(playerProp2) != get_cur_playernum())))
+ 							{
+ 								playerProp2 = D_80030B0C;
+ 								temp_v0_40 = obj->projectile;
+ 								temp_s0_13 = (struct coord3d *) playerProp2->chr;
+ 
+-								if ((((temp_v0_40->flags & PROJECTILEFLAG_AIRBORNE) && (((s32) temp_v0_40->unk90) <= 0)) && (obj->runtime_bitflags & RUNTIMEBITFLAG_THROWING_KNIFE_RELATED)) && (handles_shot_actors((struct ChrRecord *) temp_s0_13, bodypartshot, &flt_CODE_bss_80075B78, ((struct WeaponObjRecord *) obj)->weaponnum, 1) != 0))
++								s32 knifeHit = 0;
++								if ((temp_v0_40->flags & PROJECTILEFLAG_AIRBORNE) &&
++                                    (s32)temp_v0_40->unk90 <= 0 &&
++                                    (obj->runtime_bitflags & RUNTIMEBITFLAG_THROWING_KNIFE_RELATED)) {
++#ifdef GE_PORT_NATIVE
++                                    if (isSimKnife && mpRosterResolve(mpSimEffectOwner(
++                                            obj, MP_SIM_EFFECT_KNIFE)) < 0)
++                                        knifeHit = 1; /* inert projectile from a previous life */
++                                    else if (playerProp2->type == PROP_TYPE_VIEWER && isSimKnife)
++                                        knifeHit = mpCombatSimKnifeHit(obj,
++                                            getPlayerPointerIndex(playerProp2), bodypartshot,
++                                            temp_v0_40->speed.x, temp_v0_40->speed.z);
++                                    else
++#endif
++                                        knifeHit = handles_shot_actors((struct ChrRecord *)temp_s0_13,
++                                            bodypartshot, &flt_CODE_bss_80075B78,
++                                            ((struct WeaponObjRecord *)obj)->weaponnum,
++#ifdef GE_PORT_NATIVE
++                                            !isSimKnife);
++#else
++                                            1);
++#endif
++                                }
++								if (knifeHit)
+ 								{
+ 									projectileStopped = 1;
+ 
+diff --git a/src/game/explosion.c b/src/game/explosion.c
+--- a/src/game/explosion.c
++++ b/src/game/explosion.c
+@@ -27,6 +27,8 @@
+ #include <assets/oddtextures.h>
+ 
+ #ifdef GE_PORT_NATIVE
++#include "mp_combat.h"
++#include "mp_sim_effects.h"
+ #include "../../../../getv/port/src/ge_blood_math.h"
+ extern Gfx globalDL_0xa50;
+ extern s32 gePortBloodMode(void);
+@@ -851,6 +853,12 @@
+             sp40->prop = sp30;
+             sp40->source = arg0;
+             sp40->player = (s8) player;
++#ifdef GE_PORT_NATIVE
++            if (mpSimEffectPending().slot >= 0 &&
++                !mpSimEffectTrack(sp40, MP_SIM_EFFECT_EXPLOSION,
++                                  mpSimEffectPending()))
++                sp40->player = -2; /* visual only if sidecar capacity is exhausted */
++#endif
+ 
+             if (arg4 != 0)
+             {
+@@ -1002,6 +1010,12 @@
+     struct Explosion *temp_s2;
+ 
+     temp_s2 = arg0->explosion;
++#ifdef GE_PORT_NATIVE
++    if (temp_s2->player == -2) return;
++    if (mpSimEffectOwned(temp_s2, MP_SIM_EFFECT_EXPLOSION) &&
++        mpRosterResolve(mpSimEffectOwner(temp_s2, MP_SIM_EFFECT_EXPLOSION)) < 0)
++        return; /* an old-life blast has visuals but no damage or chain */
++#endif
+     temp_s6 = &g_ExplosionTypes[temp_s2->explosion_type];
+ 
+     if (temp_s2->age >= temp_s2->unk3CA)
+@@ -1078,6 +1092,18 @@
+ 
+                         if (!(spCC->runtime_bitflags & 0x1000) && !(spCC->flags2 & 0x200400))
+                         {
++#ifdef GE_PORT_NATIVE
++                            if (mpSimEffectOwned(temp_s2, MP_SIM_EFFECT_EXPLOSION) &&
++                                !mpSimEffectOwned(spCC, MP_SIM_EFFECT_REMOTE_MINE) &&
++                                !mpSimEffectOwned(spCC, MP_SIM_EFFECT_CHAIN)) {
++                                MpRosterRef owner = mpSimEffectOwner(temp_s2, MP_SIM_EFFECT_EXPLOSION);
++                                /* Chain explosions must retain the same life identity.
++                                 * If tracking fails, skip the chain rather than assign
++                                 * its damage to the human in owner bit zero. */
++                                if (!mpSimEffectTrack(spCC, MP_SIM_EFFECT_CHAIN, owner))
++                                    continue;
++                            }
++#endif
+                             maybe_detonate_object_and_its_children(
+                                 temp_s0,
+                                 ((RANDOMFRAC() * 0.5f) + 1.0f) * minfrac,
+@@ -1179,6 +1205,14 @@
+                             }
+ 
+                             sp90 = get_cur_playernum();
++#ifdef GE_PORT_NATIVE
++                            if (mpSimEffectOwned(temp_s2, MP_SIM_EFFECT_EXPLOSION)) {
++                                mpCombatDamageHumanRef(
++                                    mpSimEffectOwner(temp_s2, MP_SIM_EFFECT_EXPLOSION),
++                                    getPlayerPointerIndex(temp_s0), minfrac, xdist, zdist);
++                                continue;
++                            }
++#endif
+                             set_cur_player(getPlayerPointerIndex(temp_s0));
+ 
+                             if (getPlayerCount() == 1)
+@@ -1353,6 +1387,9 @@
+ 
+     if (exp->age >= explosiontype->duration + (s32) (16.0f * explosiontype->flareanimspeed))
+     {
++#ifdef GE_PORT_NATIVE
++        mpSimEffectForget(exp);
++#endif
+         exp->prop = NULL;
+ 
+         return TICKOP_FREE;
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -15,6 +15,7 @@
+ #include "mp_nav_graph.h"
+ #include "mp_sim_policy.h"
+ #include "mp_sim_vitals.h"
++#include "mp_sim_effects.h"
+ #include "player.h"
+ #include "chrobjdata.h"
+ #include "chr.h"
+@@ -26,6 +27,7 @@
+ #include "chrai.h"
+ #include "mp_weapon.h"
+ #include "model.h"
++#include "matrixmath.h"
+ #include "stan.h"
+ #include "gun.h"
+ #include "mpmenu.h"
+@@ -66,6 +68,7 @@
+     PropRecord *armourTarget;
+     PropRecord *blockedArmour;
+     unsigned armourBlockedUntil;
++    ObjectRecord *mineObj; /* identity checked in the effect sidecar before dereference */
+     int noWeaponLogged;
+     int engaging;
+     unsigned nextShot;
+@@ -229,6 +232,7 @@
+     if (simProbeRosterTrace() && mpRosterStage() >= 0)
+         sysLogPrintf(LOG_NOTE, "sim roster: end stage %d", mpRosterStage());
+     s_readyStage = -1;
++    mpSimEffectsReset();
+     mpRosterEnd();
+     /* Restore the stage's own tables after character/object cleanup, before
+      * dropping the probe's route and any STAN-linked stage references. */
+@@ -454,7 +458,10 @@
+         return 0;
+     weapon = prop->weapon;
+     if (weapon->prop != prop || !weapon->model ||
+-        !mpSimWeaponPolicy(simProbeWeaponKind(weapon->weaponnum))->firearm_ready)
++        (!mpSimWeaponPolicy(simProbeWeaponKind(weapon->weaponnum))->firearm_ready &&
++         weapon->weaponnum != ITEM_KNIFE &&
++         weapon->weaponnum != ITEM_THROWKNIFE &&
++         weapon->weaponnum != ITEM_REMOTEMINE))
+         return 0;
+     set = getPtrMPWeaponSetData();
+     for (int i = 0; i < 8; ++i) {
+@@ -474,6 +481,8 @@
+     float bestScore = 0.0f;
+     float lockedScore = 0.0f;
+     int seen = 0;
++    if (route->mineObj && mpSimEffectOwned(route->mineObj, MP_SIM_EFFECT_REMOTE_MINE))
++        return 0;
+     if (chrGetEquippedWeaponProp(chr, GUNRIGHT) ||
+         chrGetEquippedWeaponProp(chr, GUNLEFT)) {
+         route->weaponTarget = NULL;
+@@ -574,6 +583,101 @@
+         }
+     }
+     return 1;
++}
++
++/* Spawn a real native projectile from the character's hand. The object's
++ * packed OWNER bits remain zero but never authorize damage; the sidecar owns
++ * every knife impact and blast from this object. */
++static ObjectRecord *simProbeThrow(ChrRecord *chr, int item,
++                                   const struct player *target)
++{
++    float dx = target->prop->pos.x - chr->prop->pos.x;
++    float dz = target->prop->pos.z - chr->prop->pos.z;
++    float distance = sqrtf(dx * dx + dz * dz);
++    float nx, nz;
++    coord3d pos, velocity;
++    Mtxf orientation, spin;
++    ObjectRecord *obj;
++    MpRosterRef owner = mpRosterRefForSlot(mpRosterSlotForChr(chr->chrnum));
++    MpSimEffectKind kind = item == ITEM_THROWKNIFE ? MP_SIM_EFFECT_KNIFE :
++                                                   MP_SIM_EFFECT_REMOTE_MINE;
++    if (distance < 1.0f || mpRosterResolve(owner) != owner.slot) return NULL;
++    nx = dx / distance;
++    nz = dz / distance;
++    pos.x = chr->prop->pos.x + 40.0f * nx;
++    pos.y = chr->prop->pos.y + 55.0f;
++    pos.z = chr->prop->pos.z + 40.0f * nz;
++    velocity.x = 16.666666f * nx;
++    velocity.z = 16.666666f * nz;
++    velocity.y = 5.0f + (target->prop->pos.y - pos.y) * 16.666666f / distance;
++    matrix_4x4_set_position_and_rotation_around_y(pos.f,
++        atan2f(nx, nz), &orientation);
++    matrix_4x4_set_identity(&spin);
++    obj = create_new_item_instance_of_model(
++        item == ITEM_THROWKNIFE ? PROP_CHRKNIFE : PROP_CHRREMOTEMINE, item);
++    if (!obj) return NULL;
++    obj->runtime_bitflags &= ~RUNTIMEBITFLAG_OWNER;
++#ifdef REFRESH_PAL
++    if (kind == MP_SIM_EFFECT_REMOTE_MINE) ((WeaponObjRecord *)obj)->timer = 150;
++#else
++    if (kind == MP_SIM_EFFECT_REMOTE_MINE) ((WeaponObjRecord *)obj)->timer = 180;
++#endif
++    gunInitProjectileObject(obj, &pos, chr->prop->stan, &orientation,
++                            &velocity, &spin, chr->prop);
++    if (!(obj->runtime_bitflags & RUNTIMEBITFLAG_HASPROJECTILE) ||
++        !mpSimEffectTrack(obj, kind, owner)) {
++        objFreePermanently(obj, TRUE);
++        return NULL;
++    }
++    obj->projectile->flags |= 2;
++    obj->projectile->unk8C = 0.1f;
++#ifdef REFRESH_PAL
++    obj->projectile->refreshrate = 50;
++#else
++    obj->projectile->refreshrate = 60;
++#endif
++    if (kind == MP_SIM_EFFECT_KNIFE) {
++        obj->runtime_bitflags |= RUNTIMEBITFLAG_THROWING_KNIFE_RELATED;
++        objUpdateThrowKnifeSound(obj);
++    } else {
++        ALSoundState *sound = sndPlaySfx((struct ALBankAlt_s *)g_musicSfxBufferPtr,
++                                         GRENADE_THROW_SFX, NULL);
++        if (sound) chrobjSndCreatePostEventDefault(sound, &pos);
++    }
++    chrSetWeaponFlag4(chr, GUNRIGHT);
++    sysLogPrintf(LOG_NOTE, "sim probe: threw %s from slot %d",
++                 kind == MP_SIM_EFFECT_KNIFE ? "knife" : "remote mine", owner.slot);
++    return obj;
++}
++
++static void simProbeRemoteDetonate(ChrRecord *chr, SimProbeRoute *route)
++{
++    ObjectRecord *mine = route->mineObj;
++    if (!mine) return;
++    if (!mpSimEffectOwned(mine, MP_SIM_EFFECT_REMOTE_MINE)) {
++        route->mineObj = NULL;
++        return;
++    }
++    if (mpRosterResolve(mpSimEffectOwner(mine, MP_SIM_EFFECT_REMOTE_MINE)) < 0 ||
++        !mine->prop || ((WeaponObjRecord *)mine)->timer != 1 ||
++        (mine->runtime_bitflags & RUNTIMEBITFLAG_HASPROJECTILE)) return;
++    float bx = chr->prop->pos.x - mine->runtime_pos.x;
++    float bz = chr->prop->pos.z - mine->runtime_pos.z;
++    if (bx * bx + bz * bz < 330.0f * 330.0f) return;
++    for (int i = 0; i < getPlayerCount() && i < 4; ++i) {
++        const struct player *player = g_playerPointers[i];
++        if (!player || !player->prop || player->bonddead) continue;
++        float dx = player->prop->pos.x - mine->runtime_pos.x;
++        float dy = player->prop->pos.y - mine->runtime_pos.y;
++        float dz = player->prop->pos.z - mine->runtime_pos.z;
++        if (dx * dx + dz * dz < 240.0f * 240.0f &&
++            dy * dy < 120.0f * 120.0f) {
++            ((WeaponObjRecord *)mine)->timer = 0; /* native weapon tick creates the blast */
++            route->mineObj = NULL;
++            sysLogPrintf(LOG_NOTE, "sim probe: detonated remote mine near player %d", i + 1);
++            return;
++        }
++    }
+ }
+ 
+ /* Match the human pickup rules: only a live stage vest offering more armour
+@@ -707,8 +811,11 @@
+     if (!chr->model || !chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return 0;
+     int item = gun && gun->weapon ? gun->weapon->weaponnum : ITEM_FIST;
++    int throwingKnife = item == ITEM_THROWKNIFE;
++    int remoteMine = item == ITEM_REMOTEMINE;
+     const MpSimWeaponPolicy *policy = mpSimWeaponPolicy(simProbeWeaponKind(item));
+-    if (gun && !policy->firearm_ready) {
++    if (gun && !policy->firearm_ready && !throwingKnife && !remoteMine &&
++        item != ITEM_KNIFE) {
+         if (route->flashUntil) chrSetFiring(chr, GUNRIGHT, 0);
+         route->flashUntil = route->recoilUntil = 0;
+         return 0;
+@@ -769,7 +876,9 @@
+      * writing setsubroty here competed with animation/route rotation and
+      * made the character spin continuously. */
+     int closeEngagement = slap ||
+-        nearest < policy->hold_range * policy->hold_range;
++        (remoteMine ? (nearest >= 350.0f * 350.0f &&
++                       nearest <= 750.0f * 750.0f) :
++         nearest < policy->hold_range * policy->hold_range);
+     float desired = atan2f(dx, dz);
+     if (desired < 0.0f) desired += M_TAU_F;
+     if (closeEngagement) {
+@@ -794,6 +903,16 @@
+     if (fabsf(atan2f(sinf(desired - heading), cosf(desired - heading))) >
+             (slap ? 0.35f : 0.12f) ||
+         polls < route->nextShot) return closeEngagement;
++
++    if ((throwingKnife && nearest >= 170.0f * 170.0f &&
++         nearest <= 800.0f * 800.0f) ||
++        (remoteMine && closeEngagement && !route->mineObj)) {
++        ObjectRecord *thrown = simProbeThrow(chr, item, target);
++        route->nextShot = polls + policy->shot_interval;
++        if (thrown && remoteMine) route->mineObj = thrown;
++        return closeEngagement;
++    }
++    if (!policy->firearm_ready && !slap) return closeEngagement;
+ 
+     if (slap) {
+         const MpSimWeaponPolicy *melee = mpSimWeaponPolicy(MP_SIM_UNARMED);
+@@ -809,7 +928,8 @@
+                                          PUNCH1_SFX, NULL);
+         if (punch) chrobjSndCreatePostEventDefault(punch, &chr->prop->pos);
+         mpCombatDamageHuman(mpRosterSlotForChr(chr->chrnum), victim,
+-                            0.125f * gunItemGetDestructionAmount(ITEM_FIST),
++                            0.125f * gunItemGetDestructionAmount(
++                                item == ITEM_KNIFE ? ITEM_KNIFE : ITEM_FIST),
+                             dx / sqrtf(dx * dx + dz * dz + 1.0f),
+                             dz / sqrtf(dx * dx + dz * dz + 1.0f));
+         return 1;
+@@ -985,6 +1105,7 @@
+                 }
+             }
+             if (navReady && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
++                simProbeRemoteDetonate(chr, route);
+                 if (simProbeCombat(chr, probe->polls, route)) {
+                     if (!route->engaging)
+                         sysLogPrintf(LOG_NOTE, "sim probe: close engagement; facing player");
+diff --git a/src/game/mp_sim_policy.h b/src/game/mp_sim_policy.h
+--- a/src/game/mp_sim_policy.h
++++ b/src/game/mp_sim_policy.h
+@@ -27,8 +27,8 @@
+ } MpSimWeaponPolicy;
+ 
+ const MpSimWeaponPolicy *mpSimWeaponPolicy(MpSimWeaponKind kind);
+-/* Higher values are better. Zero means the current combat executor cannot use
+- * the item, even if it exists in the selected multiplayer weapon set. */
++/* Higher values are better. Item-specific gates in the game adapter keep
++ * timed/proximity mines and unsupported explosives out of pickup selection. */
+ float mpSimPickupScore(MpSimWeaponKind kind, float distance);
+ /* The unarmed Simulant fights when cornered; an armed one may slap only at
+  * extreme close range. Vertical separation must never produce a melee hit. */
+diff --git a/src/game/mp_sim_effects.h b/src/game/mp_sim_effects.h
+new file mode 100644
+--- /dev/null
++++ b/src/game/mp_sim_effects.h
+@@ -0,0 +1,25 @@
++#ifndef GE_MP_SIM_EFFECTS_H
++#define GE_MP_SIM_EFFECTS_H
++
++#include "mp_roster.h"
++
++/* Game objects and explosions own no controller slot. Keep their roster life
++ * beside the native object rather than packing it into the two player bits. */
++typedef enum MpSimEffectKind {
++    MP_SIM_EFFECT_KNIFE = 1,
++    MP_SIM_EFFECT_REMOTE_MINE,
++    MP_SIM_EFFECT_CHAIN,
++    MP_SIM_EFFECT_EXPLOSION
++} MpSimEffectKind;
++
++void mpSimEffectsReset(void);
++int mpSimEffectTrack(const void *key, MpSimEffectKind kind, MpRosterRef owner);
++int mpSimEffectOwned(const void *key, MpSimEffectKind kind);
++MpRosterRef mpSimEffectOwner(const void *key, MpSimEffectKind kind);
++void mpSimEffectForget(const void *key);
++/* propExplode synchronously calls explosionCreate. The pending owner is only
++ * visible during that call; it is cleared even if allocation fails. */
++void mpSimEffectSetPending(MpRosterRef owner);
++MpRosterRef mpSimEffectPending(void);
++
++#endif

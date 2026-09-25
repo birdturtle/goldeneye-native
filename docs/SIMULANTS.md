@@ -43,33 +43,30 @@ checks do not prove clearance for the actor or dynamic door traversal; failed
 paths are reported and normal movement collision still applies. Without the
 flag, the established Facility behavior remains the gameplay baseline.
 
-When armed and a player is visible, the actor keeps pursuing at range and
-fires while aligned with the player. Inside close range it yields travel to
-GoldenEye's own standing turn, then resumes pursuit when the player moves out
-of close range or sight is lost. While unarmed it still prioritizes a world
-firearm. This is the first engagement decision, not a finished aiming, weapon
-balance or cover system.
+When a player is visible, the Simulant uses its weapon's preferred range to
+advance, retreat, or move sideways between reachable waypoints. Its right arm
+tracks the player and it can shoot during native route movement. If the graph
+offers no useful lateral route, GoldenEye's standing turn faces the opponent
+until the next replan. Weapon and armour pickup goals still take precedence
+when their shared score warrants it; loss of sight resumes normal pursuit.
+This is a first combat movement pass, not a cover or advanced aiming system.
 
 ## Weapon policy foundation
 
 The Simulant classifies the selected match weapons and ranks usable world
 firearms by preference and travel distance. It retains its current pickup goal
 unless another choice is substantially better. Pistol, automatic, shotgun,
-rifle, sniper and magnum classes have separate shot intervals and distances at
-which a visible bot stops its route to face the opponent. The policy lives in
-`getv/port/src/mp_sim_policy.c` and the game-side adapter is in patch `0042`.
+rifle, sniper and magnum classes have separate shot intervals and preferred
+fight ranges. The policy lives in `getv/port/src/mp_sim_policy.c`; patch `0042`
+introduced its game adapter and patch `0049` adds combat movement.
 Its design follows the separation of weapon choice and distance choice in the
 MIT Perfect Dark decomp (`n64decomp/perfect_dark`, commit `169ed48bdcbf`,
 `src/game/botinv.c` and `src/game/botcmd.c`); these GoldenEye values are new.
 
-Knife, grenade, mine, launcher and laser classes currently have no pickup
-value. The combat executor only applies firearm hits, so picking up those
-items before their attack paths exist would leave a bot unable to fight.
-Their next phase needs melee, projectile and explosion paths with multiplayer
-ownership and scoring. Armour also needs a separate health and armour model:
-character negative `damage` represents armour, whereas the human multiplayer
-player stores health and armour separately. Simply setting negative character
-damage would heal a wounded Simulant when it picked up armour.
+Knife and remote mine pickups now have attack paths. Grenades, timed and
+proximity mines, launchers and lasers remain unavailable to the bot until
+their actions are implemented. The item-specific pickup gate prevents the
+shared mine policy from admitting the unsupported mine types.
 
 ## Close combat
 
@@ -83,10 +80,34 @@ and the third-person character briefly extends a hand for the hit. The
 slapper's cadence and range decision are in `mp_sim_policy`, with the game-side
 execution in patch `0043-simulant-melee-combat.patch`.
 
-Throwing knives and explosives need a separate projectile owner: GoldenEye's
-human throw routines encode an owner as a human player index and use it later
-for impact and explosion credit. A Simulant roster slot cannot be inserted
-into those routines as though it were a controller player.
+Throwing knives and remote mines use native object motion and impact or blast
+effects. `mp_sim_effects` holds their ownership in a sidecar keyed by the
+live object and roster incarnation. Knife impact and blast damage reach the
+human multiplayer health and scoring bridge without pretending the bot is a
+controller player. Old-life projectiles remain recognizable but cannot deal
+damage after respawn. Mine chain reactions inherit that ownership. The bot
+throws at a visible, aligned target, then detonates its one active remote mine
+when it is armed, the opponent is close, and the bot is farther away. The
+throw arc, aim and detonation spacing are initial values for playtesting.
+Knife collision also tests a human's native collision polygon when their
+first-person character model is not on screen. A remote mine can remain a
+projectile after settling; its AIRBORNE flag decides whether it has landed.
+When the armed mine is too close to the bot, it routes to a safe waypoint
+before trying to detonate.
+
+## Armour and health
+
+Each Simulant life holds armour separately from the character's accumulated
+health damage. A body-armour pickup replaces the remaining protection as it
+does for a human, without healing previous wounds. Bullet and explosion hits
+consume armour first; the surviving damage follows the native character
+health and death path. Spawn and respawn reset the pool. The bot seeks live,
+respawning vests when its current protection is lower, after securing a gun.
+It fights a visible close opponent before detouring to a pickup. The shared
+math and pickup preference live in `mp_sim_vitals`; patch `0044` connects
+pickup, damage, and life state to the game.
+Set `GETV_SIM_ARMOUR_TRACE=1` to print absorbed damage and remaining armour
+while checking a match; pickup events are logged without that setting.
 
 ## Generated route constraints
 
