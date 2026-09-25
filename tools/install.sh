@@ -451,10 +451,18 @@ info "enabling background extraction"
 
 # Markers are a specific file each generator writes, never the directory it writes into: an
 # empty directory left behind by a run that died halfway would otherwise read as "done".
+bg_assets_complete() {
+    python3 tools/check_bg_assets.py --decomp vendor/ge-decomp
+}
+bg_generated_complete() {
+    python3 tools/check_bg_assets.py --decomp vendor/ge-decomp --generated
+}
+STEP_VALIDATE=bg_assets_complete
 run_asset_step "assets/obseg/bg/bg_ame_all_p.bin"    "extracting from the ROM"  bash scripts/extract_baserom.u.sh
 run_asset_step "assets/obseg/chr/*/Model.c"          "character models"         python3 scripts/generate_chr_c.py
 run_asset_step "assets/obseg/gun/*/Model.c"          "weapon models"            python3 scripts/generate_gun_c.py
 run_asset_step "assets/obseg/prop/*/Model.c"         "prop models"              python3 scripts/generate_prop_model_c.py
+STEP_VALIDATE=bg_generated_complete
 run_asset_step "assets/obseg/ge_obseg_blobs.c"       "obseg blobs"              python3 ../../tools/gen_obseg_blobs.py
 run_asset_step "build/imagelist.csv"                 "image list"               python3 scripts/make/sync_imagelist_with_def.py build/imagelist.csv
 STEP_VALIDATE=combined_bin_complete

@@ -1,0 +1,12 @@
+diff --git a/assets/obseg/file_resource_table.inc.c b/assets/obseg/file_resource_table.inc.c
+--- a/assets/obseg/file_resource_table.inc.c
++++ b/assets/obseg/file_resource_table.inc.c
+@@ -30,7 +30,7 @@
+     {BG_IMP_ALL_P, "bg/bg_imp_all_p.seg", &bg_imp_all_p_seg},
+     {BG_ASH_ALL_P, "bg/bg_ash_all_p.seg", &bg_imp_all_p_seg},
+     {BG_LUE_ALL_P, "bg/bg_lue_all_p.seg", &bg_imp_all_p_seg},
+-    {BG_AME_ALL_P, "bg/bg_ame_all_p.seg", &bg_imp_all_p_seg},
++    {BG_AME_ALL_P, "bg/bg_ame_all_p.seg", &bg_ame_all_p_seg},
+     {BG_RIT_ALL_P, "bg/bg_rit_all_p.seg", &bg_rit_all_p_seg},
+     {BG_OAT_ALL_P, "bg/bg_oat_all_p.seg", &bg_oat_all_p_seg},
+     {BG_EAR_ALL_P, "bg/bg_ear_all_p.seg", &bg_ear_all_p_seg},

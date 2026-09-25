@@ -173,7 +173,9 @@ for p in 0001-source 0006-fov-live-setter 0007-load-trace \
          0022-lockstep-stop-shuffling-every-frame 0023-enemy-gibs 0024-multi-ammo-endianness \
          0025-cuff-native-pointer-stride 0026-bloodier-gibs 0027-external-rom-path 0028-prop-allocator-telemetry 0029-modern-mouse-look 0030-autocrouch-render-ticks \
          0031-native-joy-poll-handshake 0032-manual-reload 0033-simulant-multiplayer 0034-file-select-folder-hitbox \
-         0035-multiplayer-controls-simulant-speed 0036-native-gopos-animation-gait; do
+         0035-multiplayer-controls-simulant-speed 0036-native-gopos-animation-gait \
+         0037-generated-simulant-navigation 0038-simulant-engagement-priority \
+         0039-simulant-native-facing 0040-background-asset-guard 0041-background-resource-registration; do
   if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/$p.patch" ) 2>/dev/null; then
     echo "$p.patch: already applied"
   else

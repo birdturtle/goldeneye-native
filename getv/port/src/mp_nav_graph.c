@@ -55,6 +55,49 @@ int mpNavGraphReachable(const MpNavGraph *graph, int from_pad, int to_pad)
            graph->component[from] == graph->component[to];
 }
 
+int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
+                    int *pad_ids, int capacity)
+{
+    int from, to, *previous, *queue, head = 0, tail = 0, count = 0, written;
+    int i, current;
+    if (!graph || !graph->nodes || !graph->edges || !graph->component ||
+        !pad_ids || capacity <= 0) return 0;
+    from = mpNavIndex(graph, from_pad);
+    to = mpNavIndex(graph, to_pad);
+    if (from < 0 || to < 0 || graph->component[from] != graph->component[to]) return 0;
+    previous = malloc((size_t)graph->node_count * sizeof(*previous));
+    queue = malloc((size_t)graph->node_count * sizeof(*queue));
+    if (!previous || !queue) { free(previous); free(queue); return 0; }
+    for (i = 0; i < graph->node_count; ++i) previous[i] = -1;
+    previous[from] = from;
+    queue[tail++] = from;
+    while (head < tail && previous[to] < 0) {
+        current = queue[head++];
+        for (i = 0; i < graph->node_count; ++i) {
+            if (graph->edges[(size_t)current * graph->node_count + i] &&
+                previous[i] < 0) {
+                previous[i] = current;
+                queue[tail++] = i;
+            }
+        }
+    }
+    if (previous[to] >= 0) {
+        /* The BFS queue is no longer needed. Reuse it to reverse the route. */
+        for (current = to;; current = previous[current]) {
+            queue[count++] = current;
+            if (current == from) break;
+        }
+        written = count < capacity ? count : capacity;
+        for (i = 0; i < written; ++i)
+            pad_ids[i] = graph->nodes[queue[count - 1 - i]].pad_id;
+    } else {
+        written = 0;
+    }
+    free(previous);
+    free(queue);
+    return written;
+}
+
 int mpNavGraphBuild(MpNavGraph *graph, int stage, const MpNavAnchor *pads,
                     int pad_count, int candidate_limit,
                     MpNavDirectWalk direct_walk, void *context)
@@ -139,7 +182,8 @@ int mpNavGraphBuild(MpNavGraph *graph, int stage, const MpNavAnchor *pads,
     }
     /* Graph diameter is diagnostic. The actor's native six-waypoint route
      * buffer must never be confused with this total path length. */
-    for (i = 0; i < n; i++) {
+    next.max_route_hops = n > 256 ? -1 : 0;
+    for (i = 0; i < n && n <= 256; i++) {
         int head = 0, tail = 0;
         for (j = 0; j < n; j++) dist[j] = -1;
         dist[i] = 0;

@@ -68,6 +68,30 @@ action byte 45. Native pointer alignment moves that field to byte 81, so byte
 45 reads waypoint pointer data and normally selects the walking animation.
 Movement and animation now read the same typed speed field.
 
+`0037-generated-simulant-navigation.patch` adds an opt-in runtime graph from
+each stage's existing pads and STAN links (`GETV_SIM_NAV=generated`). It feeds
+native waypoint tables and uses a bounded route bridge so long paths cannot
+overflow the character's six waypoint slots. The normal Facility route stays
+the default until other maps are playtested.
+
+`0038-simulant-engagement-priority.patch` pauses travel when an armed
+Simulant has clear line of sight to a player, allowing its body to turn and
+fire. It resumes route pursuit when sight is lost. Weapon search remains the
+priority while unarmed.
+
+`0039-simulant-native-facing.patch` removes the Simulant's per-poll direct
+model rotation. At close range GoldenEye's standing turn faces the player; at
+longer visible ranges the actor continues its route and can fire when aligned.
+
+`0040-background-asset-guard.patch` rejects a background with no registered
+bytes before its header is parsed. The installers now verify every nonempty
+background against the extraction manifest and generated blob-size table.
+
+`0041-background-resource-registration.patch` connects the Stack/Basement/Library
+resource name to its actual `bg_ame_all_p_seg` blob. Upstream points that name at
+the empty `bg_imp_all_p_seg` cut-level placeholder. The generated asset check
+also verifies every nonempty map's resource name resolves to its own blob.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them

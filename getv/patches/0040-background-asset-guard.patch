@@ -1,0 +1,61 @@
+diff --git a/src/game/bg.c b/src/game/bg.c
+--- a/src/game/bg.c
++++ b/src/game/bg.c
+@@ -18,6 +18,7 @@
+ #include "lv.h"
+ #include "math_ceil.h"
+ #include "matrixmath.h"
++#include "ob.h"
+ #include "player.h"
+ #include "stan.h"
+ #include "explosion.h"
+@@ -1353,9 +1354,49 @@
+ 
+ 
+     lightFixtureInitTables();
++
++#ifdef GE_PORT_NATIVE
++    /* obLoadBGFileBytesAtOffset silently does nothing when the registered
++     * asset size is zero. The next line then interprets uninitialised stack
++     * bytes as a segmented room-table pointer and crashes at a wild address.
++     * Catch the missing build input at the ownership boundary instead. */
++    {
++        extern fileentry file_resource_table[];
++        extern resource_lookup_data_entry resource_lookup_data_array[];
++        int index = fileGetIndex((char *)levelinfotable[levelentry_index].bg_seg_filename);
++        if (index <= 0 || !file_resource_table[index].hw_address ||
++            resource_lookup_data_array[index].rom_size < sizeof(header)) {
++            fprintf(stderr, "[getv] stage %d background '%s' was not built into this game "
++                            "(registered size %u). Re-extract and regenerate the background "
++                            "blobs before rebuilding.\n", (int)levelid,
++                    (char *)levelinfotable[levelentry_index].bg_seg_filename,
++                    index > 0 ? (unsigned)resource_lookup_data_array[index].rom_size : 0u);
++            fflush(stderr);
++            { extern void _exit(int); _exit(1); }
++        }
++    }
++#endif
+  
+     ptr_bg_data = (uintptr_t)header;
+     obLoadBGFileBytesAtOffset(levelinfotable[levelentry_index].bg_seg_filename, (u8 *) ptr_bg_data, 0, 0x40);
++
++#ifdef GE_PORT_NATIVE
++    /* The second room record is read below. A missing or corrupt header must
++     * never turn its segmented table offset into a pointer outside this buffer. */
++    {
++        u32 room_table = BG_HDR_WORD(ptr_bg_data, 1);
++        u32 offset = room_table & 0x00ffffffu;
++        if ((room_table & 0xff000000u) != 0x0f000000u ||
++            offset < 0x14u || offset > 0x20u) {
++            fprintf(stderr, "[getv] stage %d background '%s' has an invalid header "
++                            "(room table 0x%08x). Rebuild the extracted background assets.\n",
++                    (int)levelid, (char *)levelinfotable[levelentry_index].bg_seg_filename,
++                    (unsigned)room_table);
++            fflush(stderr);
++            { extern void _exit(int); _exit(1); }
++        }
++    }
++#endif
+ 
+     if (((levelid && ptr_bg_data) && levelentry_index));
+ 

@@ -90,6 +90,12 @@ foreach ($t in @($gcc, $gxx, $ar)) {
 if (-not (Test-Path (Join-Path $decomp 'src\game\lv.c'))) {
   throw "decomp missing at $decomp -- this repository does not include it"
 }
+if ($Target -ne 'clean') {
+  & python (Join-Path $root 'tools\check_bg_assets.py') --decomp $decomp --generated
+  if ($LASTEXITCODE -ne 0) {
+    throw 'background assets or resource registrations are incomplete -- run tools\install.ps1 -NoBuild first'
+  }
+}
 
 # ---------------------------------------------------------------- SDL2
 # pkg-config is a native binary too, so it is safe to call. Falling back to the conventional

@@ -1,0 +1,356 @@
+diff --git a/src/game/front.c b/src/game/front.c
+index 572ea74..e16c4df 100644
+--- a/src/game/front.c
++++ b/src/game/front.c
+@@ -48,6 +48,7 @@ int ge_csprobe(void) {
+ #include "bg.h"
+ #ifdef GE_PORT_NATIVE
+ #include "mp_simulants.h"
++#include "simulant_probe.h"
+ #endif
+ #include "chrai.h"
+ #include "title.h"
+@@ -4433,7 +4434,8 @@ s32 check_if_mp_stage_unlocked(s32 stage)
+ {
+     s32 players;
+ #ifdef GE_PORT_NATIVE
+-    if (mpSimulantsGetCount() && multi_stage_setups[stage].stage_id != LEVELID_FACILITY)
++    if (mpSimulantsGetCount() && !simulantProbeGeneratedRequested() &&
++        multi_stage_setups[stage].stage_id != LEVELID_FACILITY)
+         return FALSE;
+ #endif
+     if (!multi_stage_setups[stage].min_player)
+@@ -4873,7 +4875,8 @@ void init_mp_options_for_scenario(s32 numplayers)
+ 
+     selected_num_players = numplayers;
+ #ifdef GE_PORT_NATIVE
+-    if (mpSimulantsGetCount()) MP_stage_selected = MP_STAGE_FACILITY;
++    if (mpSimulantsGetCount() && !simulantProbeGeneratedRequested())
++        MP_stage_selected = MP_STAGE_FACILITY;
+ #endif
+ 
+     for (i=0; i < selected_num_players; i++)
+@@ -4969,7 +4972,8 @@ static void interface_mp_simulants(void)
+         } else {
+             mpSimulantsSetCount(selected_num_players, !mpSimulantsGetCount());
+             if (mpSimulantsGetCount()) {
+-                MP_stage_selected = MP_STAGE_FACILITY;
++                if (!simulantProbeGeneratedRequested())
++                    MP_stage_selected = MP_STAGE_FACILITY;
+                 reset_mp_options_for_scenario(SCENARIO_NORMAL);
+             }
+         }
+@@ -5283,7 +5287,8 @@ void interface_menu0E_mpoptions(void)
+             selected_stage = multi_stage_setups[MP_stage_selected].stage_id;
+         }
+ #ifdef GE_PORT_NATIVE
+-        if (mpSimulantsGetCount() && selected_stage != LEVELID_FACILITY) {
++        if (mpSimulantsGetCount() && !simulantProbeGeneratedRequested() &&
++            selected_stage != LEVELID_FACILITY) {
+             selected_stage = LEVELID_FACILITY;
+             MP_stage_selected = MP_STAGE_FACILITY;
+         }
+diff --git a/src/game/mp_nav_graph.h b/src/game/mp_nav_graph.h
+new file mode 100644
+index 0000000..781332a
+--- /dev/null
++++ b/src/game/mp_nav_graph.h
+@@ -0,0 +1,45 @@
++#ifndef GE_MP_NAV_GRAPH_H
++#define GE_MP_NAV_GRAPH_H
++
++/* Map-independent runtime graph. Zero-initialize before first build. A stage
++ * adapter supplies pads with STAN associations and an engine-backed direct-walk
++ * check. No stage pointers are retained; rebuild after each stage load.
++ * Keep this declaration in sync with the game-side copy in patch 0037. */
++typedef struct MpNavAnchor {
++    int pad_id;
++    float x, y, z;
++    int has_stan;
++} MpNavAnchor;
++
++typedef int (*MpNavDirectWalk)(const MpNavAnchor *from,
++                               const MpNavAnchor *to, void *context);
++
++typedef struct MpNavGraph {
++    int stage;
++    int node_count;
++    MpNavAnchor *nodes;
++    unsigned char *edges;
++    int *component;
++    int edge_count;
++    int component_count;
++    int largest_component;
++    int isolated_nodes;
++    int max_neighbours;
++    int max_route_hops;
++} MpNavGraph;
++
++/* Expects stable, unique pad IDs. Each node examines at most candidate_limit
++ * nearest other pads (squared 3D distance, then pad ID). Edges are symmetric
++ * only when the walk check accepts travel in both directions. */
++int mpNavGraphBuild(MpNavGraph *graph, int stage, const MpNavAnchor *pads,
++                    int pad_count, int candidate_limit,
++                    MpNavDirectWalk direct_walk, void *context);
++int mpNavGraphReachable(const MpNavGraph *graph, int from_pad, int to_pad);
++/* Returns a bounded prefix of the shortest route, including the start pad.
++ * Zero means no route; callers can ask again after reaching the last returned
++ * pad. The complete path is checked before any prefix is returned. */
++int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
++                    int *pad_ids, int capacity);
++void mpNavGraphClear(MpNavGraph *graph);
++
++#endif
+diff --git a/src/game/padhalllv.c b/src/game/padhalllv.c
+index 70d82ce..7899891 100644
+--- a/src/game/padhalllv.c
++++ b/src/game/padhalllv.c
+@@ -3,6 +3,9 @@
+ #include "bondtypes.h"
+ #include "chrai.h"
+ #include "random.h"
++#ifdef GE_PORT_NATIVE
++#include "simulant_probe.h"
++#endif
+ 
+ 
+ /**
+@@ -418,6 +421,12 @@ void sub_GAME_7F08F438(waygroup *groupa, waygroup *groupb, waypoint **pointa, wa
+  */
+ s32 waypointFindRoute(waypoint *frompoint, waypoint *topoint, waypoint **arr, s32 arrlen)
+ {
++#ifdef GE_PORT_NATIVE
++    /* Generated graphs can span many more than the actor's six slots. The
++     * original in-group solver ignores arrlen, so never pass it these tables. */
++    if (simulantProbeGeneratedNavActive())
++        return simulantProbeGeneratedRoute(frompoint, topoint, arr, arrlen);
++#endif
+     waypoint **arrptr = arr;
+     waygroup *groups = g_CurrentSetup.waypointgroups;
+ 
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+index fb54e9d..ea196f5 100644
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -12,6 +12,7 @@
+ #include "mp_roster.h"
+ #include "mp_simulants.h"
+ #include "mp_combat.h"
++#include "mp_nav_graph.h"
+ #include "player.h"
+ #include "chrobjdata.h"
+ #include "chr.h"
+@@ -88,6 +89,54 @@ static int s_navCount;
+ static waypoint *s_originalWaypoints;
+ static waygroup *s_originalGroups;
+ static int s_readyStage = -1;
++static MpNavGraph s_generatedGraph;
++static waypoint *s_generatedWaypoints;
++static waygroup *s_generatedGroups;
++static s32 *s_generatedNeighbours;
++static s32 *s_generatedMembers;
++static PadRecord *s_generatedFailedPads;
++static s32 s_generatedGroupNeighbours[] = {-1};
++
++int simulantProbeGeneratedRequested(void)
++{
++    const char *mode = getenv("GETV_SIM_NAV");
++    return mode && strcmp(mode, "generated") == 0;
++}
++
++int simulantProbeGeneratedNavActive(void)
++{
++    return s_generatedWaypoints && g_CurrentSetup.pathwaypoints == s_generatedWaypoints &&
++           g_CurrentSetup.waypointgroups == s_generatedGroups;
++}
++
++/* The route solver's result includes its NULL terminator. On an incomplete
++ * route, the engine replans when it advances past the fourth waypoint. */
++int simulantProbeGeneratedRoute(waypoint *from, waypoint *to,
++                                waypoint **out, int capacity)
++{
++    int ids[5], count, fromIndex = -1, toIndex = -1, i, j;
++    if (!out || capacity < 1) return 0;
++    out[0] = NULL;
++    if (!simulantProbeGeneratedNavActive() || !from || !to) return 1;
++    for (i = 0; i < s_generatedGraph.node_count; ++i) {
++        if (from == &s_generatedWaypoints[i]) fromIndex = i;
++        if (to == &s_generatedWaypoints[i]) toIndex = i;
++    }
++    if (fromIndex < 0 || toIndex < 0) return 1;
++    if (capacity > 6) capacity = 6;
++    count = mpNavGraphRoute(&s_generatedGraph, from->padID, to->padID,
++                            ids, capacity - 1);
++    for (i = 0; i < count; ++i) {
++        for (j = 0; j < s_generatedGraph.node_count; ++j)
++            if (s_generatedWaypoints[j].padID == ids[i]) break;
++        if (j == s_generatedGraph.node_count) break;
++        out[i] = &s_generatedWaypoints[j];
++    }
++    out[i++] = NULL;
++    /* plot_course_for_actor copies all six slots even for a short route. */
++    for (j = i; j < capacity; ++j) out[j] = NULL;
++    return i;
++}
+ 
+ static int simProbeEnabled(void)
+ {
+@@ -180,10 +229,22 @@ void simulantProbeStageTeardown(void)
+         g_CurrentSetup.pathwaypoints = s_originalWaypoints;
+     if (g_CurrentSetup.waypointgroups == UsetuparkZ.waypointgroups && s_originalGroups)
+         g_CurrentSetup.waypointgroups = s_originalGroups;
++    if (g_CurrentSetup.waypointgroups == s_generatedGroups && s_originalGroups)
++        g_CurrentSetup.waypointgroups = s_originalGroups;
+     s_originalWaypoints = NULL;
+     s_originalGroups = NULL;
+     s_navWaypoints = NULL;
+     s_navCount = 0;
++    free(s_generatedWaypoints);
++    free(s_generatedGroups);
++    free(s_generatedNeighbours);
++    free(s_generatedMembers);
++    s_generatedWaypoints = NULL;
++    s_generatedGroups = NULL;
++    s_generatedNeighbours = NULL;
++    s_generatedMembers = NULL;
++    s_generatedFailedPads = NULL;
++    mpNavGraphClear(&s_generatedGraph);
+     for (int id = 0; id < HEAD_END; ++id) {
+         if (s_botModelUsed[id]) {
+             ModelFileHeader *header = c_item_entries[id].header;
+@@ -254,6 +315,98 @@ static int simProbeInstallFacilityNav(int stage)
+     return 1;
+ }
+ 
++/* STAN's straight tile walk checks that both pad centres share a traversable
++ * segment. Bidirectional testing is performed by mpNavGraphBuild. Dynamic
++ * doors, actor radius, and steps are left to the normal movement collision. */
++static int simProbeDirectWalk(const MpNavAnchor *from, const MpNavAnchor *to,
++                              void *context)
++{
++    PadRecord *pads = context;
++    StandTile *tile = pads[from->pad_id].stan;
++    if (!tile || !pads[to->pad_id].stan || fabsf(from->y - to->y) > 160.0f)
++        return 0;
++    return walkTilesBetweenPoints_NoCallback(&tile, from->x, from->z,
++                                              to->x, to->z) &&
++           tile == pads[to->pad_id].stan;
++}
++
++static int simProbeInstallGeneratedNav(int stage)
++{
++    MpNavAnchor *anchors = NULL;
++    int pads = 0, i, j, offset = 0, n;
++    if (simulantProbeGeneratedNavActive()) return 1;
++    if (!g_CurrentSetup.pads || !g_CurrentSetup.pathwaypoints ||
++        !g_CurrentSetup.waypointgroups ||
++        g_CurrentSetup.pathwaypoints[0].padID >= 0 ||
++        g_CurrentSetup.waypointgroups[0].neighbours ||
++        g_CurrentSetup.pads == s_generatedFailedPads) return 0;
++    while (pads < 1024 && g_CurrentSetup.pads[pads].plink) ++pads;
++    if (pads >= 1024 || pads < 2) goto failed;
++    anchors = malloc((size_t)pads * sizeof(*anchors));
++    if (!anchors) goto failed;
++    for (i = 0; i < pads; ++i) {
++        PadRecord *pad = &g_CurrentSetup.pads[i];
++        anchors[i] = (MpNavAnchor){i, pad->pos.x, pad->pos.y, pad->pos.z,
++                                   pad->stan != NULL};
++    }
++    if (!mpNavGraphBuild(&s_generatedGraph, stage, anchors, pads, 24,
++                         simProbeDirectWalk, g_CurrentSetup.pads)) goto failed;
++    free(anchors);
++    anchors = NULL;
++    n = s_generatedGraph.node_count;
++    sysLogPrintf(LOG_NOTE,
++                 "sim nav: stage=%d pads=%d nodes=%d edges=%d components=%d largest=%d isolated=%d hops=%d",
++                 stage, pads, n, s_generatedGraph.edge_count,
++                 s_generatedGraph.component_count, s_generatedGraph.largest_component,
++                 s_generatedGraph.isolated_nodes, s_generatedGraph.max_route_hops);
++    if (n < 2 || s_generatedGraph.largest_component < 2) goto failed;
++    s_generatedWaypoints = calloc((size_t)n + 1, sizeof(*s_generatedWaypoints));
++    s_generatedGroups = calloc(2, sizeof(*s_generatedGroups));
++    s_generatedMembers = malloc(((size_t)n + 1) * sizeof(*s_generatedMembers));
++    s_generatedNeighbours = malloc(((size_t)n + 2 * s_generatedGraph.edge_count) *
++                                    sizeof(*s_generatedNeighbours));
++    if (!s_generatedWaypoints || !s_generatedGroups || !s_generatedMembers ||
++        !s_generatedNeighbours) goto failed;
++    for (i = 0; i < n; ++i) {
++        waypoint *point = &s_generatedWaypoints[i];
++        point->padID = s_generatedGraph.nodes[i].pad_id;
++        point->groupNum = 0;
++        point->dist = -1;
++        point->neighbours = &s_generatedNeighbours[offset];
++        for (j = 0; j < n; ++j)
++            if (s_generatedGraph.edges[(size_t)i * n + j])
++                s_generatedNeighbours[offset++] = j;
++        s_generatedNeighbours[offset++] = -1;
++        s_generatedMembers[i] = i;
++    }
++    s_generatedWaypoints[n].padID = -1;
++    s_generatedMembers[n] = -1;
++    s_generatedGroups[0].neighbours = s_generatedGroupNeighbours;
++    s_generatedGroups[0].waypoints = s_generatedMembers;
++    s_generatedGroups[1].neighbours = NULL;
++    s_navWaypoints = s_generatedWaypoints;
++    s_navCount = n;
++    s_originalWaypoints = g_CurrentSetup.pathwaypoints;
++    s_originalGroups = g_CurrentSetup.waypointgroups;
++    g_CurrentSetup.pathwaypoints = s_generatedWaypoints;
++    g_CurrentSetup.waypointgroups = s_generatedGroups;
++    return 1;
++failed:
++    free(anchors);
++    sysLogPrintf(LOG_NOTE, "sim nav: stage %d graph unavailable; navigation disabled", stage);
++    s_generatedFailedPads = g_CurrentSetup.pads;
++    free(s_generatedWaypoints);
++    free(s_generatedGroups);
++    free(s_generatedMembers);
++    free(s_generatedNeighbours);
++    s_generatedWaypoints = NULL;
++    s_generatedGroups = NULL;
++    s_generatedMembers = NULL;
++    s_generatedNeighbours = NULL;
++    mpNavGraphClear(&s_generatedGraph);
++    return 0;
++}
++
+ /* Only stage-owned, respawning firearms from the selected MP weapon set.
+  * Dropped items and special scenario objects need their own pickup rules. */
+ static int simProbeUsableWorldGun(PropRecord *prop)
+@@ -559,6 +712,9 @@ static void simProbeWalk(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
+     }
+     for (int i = 0; i < s_navCount; ++i) {
+         if (&s_navWaypoints[i] == start ||
++            (simulantProbeGeneratedNavActive() &&
++             !mpNavGraphReachable(&s_generatedGraph, start->padID,
++                                  s_navWaypoints[i].padID)) ||
+             (i == route->blockedGoal && polls < route->blockedUntil)) continue;
+         PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[i].padID];
+         float dx = pad->pos.x - target->prop->pos.x;
+@@ -613,7 +769,8 @@ void simulantProbePoll(void)
+     if (!g_ChrSlots || g_NumChrSlots < 3) return;
+ 
+     /* Stage setup and its STAN links have been initialized by this point. */
+-    int navReady = simProbeInstallFacilityNav(stage);
++    int navReady = simulantProbeGeneratedRequested()
++        ? simProbeInstallGeneratedNav(stage) : simProbeInstallFacilityNav(stage);
+ 
+     /* Keep the actor through its full death animation. GoldenEye removes a
+      * dead chr from its character slot after the corpse finishes fading. */
+diff --git a/src/game/simulant_probe.h b/src/game/simulant_probe.h
+index 525b57c..51bb2d4 100644
+--- a/src/game/simulant_probe.h
++++ b/src/game/simulant_probe.h
+@@ -4,7 +4,12 @@
+ #define GE_SIMULANT_PROBE_H
+ 
+ struct PropRecord;
++struct waypoint;
+ struct PropRecord *simulantProbeGetProp(void);
++int simulantProbeGeneratedRequested(void);
++int simulantProbeGeneratedNavActive(void);
++int simulantProbeGeneratedRoute(struct waypoint *from, struct waypoint *to,
++                                struct waypoint **out, int capacity);
+ 
+ /* Temporary PC-only proof that an AI character can exist beside MP players. */
+ void simulantProbePoll(void);

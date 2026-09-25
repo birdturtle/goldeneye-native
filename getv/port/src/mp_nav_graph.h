@@ -1,9 +1,10 @@
 #ifndef GE_MP_NAV_GRAPH_H
 #define GE_MP_NAV_GRAPH_H
 
-/* Map-independent diagnostic graph. Zero-initialize before first build. A stage adapter supplies pads with STAN
- * associations and an engine-backed direct-walk check. No stage pointers are
- * retained: callers can rebuild it after each stage load. */
+/* Map-independent runtime graph. Zero-initialize before first build. A stage
+ * adapter supplies pads with STAN associations and an engine-backed direct-walk
+ * check. No stage pointers are retained; rebuild after each stage load.
+ * Keep this declaration in sync with the game-side copy in patch 0037. */
 typedef struct MpNavAnchor {
     int pad_id;
     float x, y, z;
@@ -34,6 +35,11 @@ int mpNavGraphBuild(MpNavGraph *graph, int stage, const MpNavAnchor *pads,
                     int pad_count, int candidate_limit,
                     MpNavDirectWalk direct_walk, void *context);
 int mpNavGraphReachable(const MpNavGraph *graph, int from_pad, int to_pad);
+/* Returns a bounded prefix of the shortest route, including the start pad.
+ * Zero means no route; callers can ask again after reaching the last returned
+ * pad. The complete path is checked before any prefix is returned. */
+int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
+                    int *pad_ids, int capacity);
 void mpNavGraphClear(MpNavGraph *graph);
 
 #endif

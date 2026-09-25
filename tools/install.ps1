@@ -462,7 +462,11 @@ try {
 # treating it as completion let a failed image pass be skipped forever on the next run. Replacing
 # this with a content-bound completion record remains a separate hardening task; a stamp based on
 # generated manifests can bless partial outputs and is worse than this known, deterministic marker.
-Invoke-AssetStep 'assets\images\split\2697.bin' 'extracting from the ROM' $Bash @('scripts/extract_baserom.u.sh', $romForBuild)
+$backgroundComplete = {
+  & python "$root\tools\check_bg_assets.py" --decomp $decomp
+  return ($LASTEXITCODE -eq 0)
+}
+Invoke-AssetStep 'assets\images\split\2697.bin' 'extracting from the ROM' $Bash @('scripts/extract_baserom.u.sh', $romForBuild) $backgroundComplete
 } finally {
   if ($temporaryRom -and (Test-Path -LiteralPath $temporaryRom)) {
     Remove-Item -LiteralPath $temporaryRom -Force
@@ -473,7 +477,11 @@ Invoke-AssetStep 'assets\images\split\2697.bin' 'extracting from the ROM' $Bash 
 Invoke-AssetStep 'assets\obseg\chr\*\Model.c'            'character models'        'python' @('scripts/generate_chr_c.py')
 Invoke-AssetStep 'assets\obseg\gun\*\Model.c'            'weapon models'           'python' @('scripts/generate_gun_c.py')
 Invoke-AssetStep 'assets\obseg\prop\*\Model.c'           'prop models'             'python' @('scripts/generate_prop_model_c.py')
-Invoke-AssetStep 'assets\obseg\ge_obseg_blobs.c'         'obseg blobs'             'python' @("$root\tools\gen_obseg_blobs.py")
+$backgroundGenerated = {
+  & python "$root\tools\check_bg_assets.py" --decomp $decomp --generated
+  return ($LASTEXITCODE -eq 0)
+}
+Invoke-AssetStep 'assets\obseg\ge_obseg_blobs.c'         'obseg blobs'             'python' @("$root\tools\gen_obseg_blobs.py") $backgroundGenerated
 Invoke-AssetStep 'build\imagelist.csv'                   'image list'              'python' @('scripts/make/sync_imagelist_with_def.py','build/imagelist.csv')
 # combine_images_named.sh appends each listed .bin with `cat file >> combined.bin` and never reads
 # cat's exit status -- its only guard is whether the file EXISTS. Under the MSYS fork failures this

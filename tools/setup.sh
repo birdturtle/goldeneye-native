@@ -88,6 +88,11 @@ else
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0034-file-select-folder-hitbox.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0035-multiplayer-controls-simulant-speed.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0036-native-gopos-animation-gait.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0037-generated-simulant-navigation.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0038-simulant-engagement-priority.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0039-simulant-native-facing.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0040-background-asset-guard.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0041-background-resource-registration.patch" )
     echo "cloned and patched"
 fi
 

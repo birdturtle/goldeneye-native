@@ -277,6 +277,36 @@ else
   ( cd "$DECOMP" && git apply "$HERE/getv/patches/0036-native-gopos-animation-gait.patch" ) \
     || die "0036-native-gopos-animation-gait.patch failed to apply"
 fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0037-generated-simulant-navigation.patch" ) 2>/dev/null; then
+  echo "0037-generated-simulant-navigation.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0037-generated-simulant-navigation.patch" ) \
+    || die "0037-generated-simulant-navigation.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0038-simulant-engagement-priority.patch" ) 2>/dev/null; then
+  echo "0038-simulant-engagement-priority.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0038-simulant-engagement-priority.patch" ) \
+    || die "0038-simulant-engagement-priority.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0039-simulant-native-facing.patch" ) 2>/dev/null; then
+  echo "0039-simulant-native-facing.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0039-simulant-native-facing.patch" ) \
+    || die "0039-simulant-native-facing.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0040-background-asset-guard.patch" ) 2>/dev/null; then
+  echo "0040-background-asset-guard.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0040-background-asset-guard.patch" ) \
+    || die "0040-background-asset-guard.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0041-background-resource-registration.patch" ) 2>/dev/null; then
+  echo "0041-background-resource-registration.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0041-background-resource-registration.patch" ) \
+    || die "0041-background-resource-registration.patch failed to apply"
+fi
 
 # The ROM's SHA-1, from whichever tool this machine actually has.
 #
