@@ -29,6 +29,16 @@ with a bounded route bridge for the actor's six waypoint slots. No graph is
 stored per map or shipped as map data. The log reports node, edge, component,
 largest component and isolated pad counts for each generated stage.
 
+Route decisions now measure path length on the active waypoint graph, with
+unreachable destinations removed from pickup, chase, maneuver and mine retreat
+choices. The graph is built once per stage and the Simulant's distance map is
+refreshed when its start waypoint changes or every 30 polls. Pursuit passes the
+human's current horizontal position to the native character route action.
+Facility's authored links and the generated graph both provide bounded route
+prefixes for the six-slot actor buffer. Native collision and doors still decide
+whether a planned move actually succeeds. This is a first route-selection pass;
+map coverage and dynamic obstacles still need in-game testing.
+
 On Windows, after applying the patch, launch with:
 
 ```powershell

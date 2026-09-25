@@ -4,7 +4,7 @@
 /* Map-independent runtime graph. Zero-initialize before first build. A stage
  * adapter supplies pads with STAN associations and an engine-backed direct-walk
  * check. No stage pointers are retained; rebuild after each stage load.
- * Keep this declaration in sync with the game-side copy in patch 0037. */
+ * Keep this declaration in sync with the game-side copy through patch 0050. */
 typedef struct MpNavAnchor {
     int pad_id;
     float x, y, z;
@@ -40,6 +40,13 @@ int mpNavGraphReachable(const MpNavGraph *graph, int from_pad, int to_pad);
  * pad. The complete path is checked before any prefix is returned. */
 int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
                     int *pad_ids, int capacity);
+/* Path length along actual links, with height penalized like the goal policy.
+ * Costs are indexed by graph->nodes (sorted pad IDs); unreachable is negative.
+ * Reuse the result for all candidates in a decision tick. */
+int mpNavGraphCosts(const MpNavGraph *graph, int from_pad,
+                    float *costs, int capacity);
+float mpNavGraphCostToPad(const MpNavGraph *graph, const float *costs,
+                          int to_pad);
 void mpNavGraphClear(MpNavGraph *graph);
 
 #endif

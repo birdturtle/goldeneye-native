@@ -18,6 +18,7 @@ Sources and full texts: `docs/research/MGB64_MINING.md` §5, `docs/research/GOLD
 | `audio/ge_mixer.c` | ours, built against libultra's AL semantics | `aPoleFilter` derived from GE's own `init_lpfilter` coefficients |
 | `src/**`, `mac/**` | ours | tvOS/macOS harness, input, asset bridge, render loop |
 | `src/mp_roster.{c,h}`, `src/mp_simulants.{c,h}` | `birdturtle/goldeneye-pc-port` at `7440ab16`, MIT, Copyright 2026 James Dansereau | Adapted four-combatant roster and human-first Simulant configuration; full MIT notice in `SIMULANT_SOURCE_LICENSE.txt`. |
+| `src/mp_nav_graph.{c,h}` and patch `0050` | `n64decomp/perfect_dark` at `169ed48bdcbfb3b568b028bd5bebb27680073514`, `src/game/padhalllv.c` and `src/game/botcmd.c`, MIT | Navigation design reference: attach actor and destination to live waypoints and rank options by route cost. The graph metric and GoldenEye stage adapters are new code; no stage coordinates or PD implementation were copied. |
 
 Anything adapted from another project must record repo, commit and file both at the
 adaptation site and in this document.

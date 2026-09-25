@@ -1,6 +1,7 @@
 #include "mp_nav_graph.h"
 
 #include <limits.h>
+#include <math.h>
 #include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
@@ -53,6 +54,50 @@ int mpNavGraphReachable(const MpNavGraph *graph, int from_pad, int to_pad)
     to = mpNavIndex(graph, to_pad);
     return from >= 0 && to >= 0 &&
            graph->component[from] == graph->component[to];
+}
+
+int mpNavGraphCosts(const MpNavGraph *graph, int from_pad,
+                    float *costs, int capacity)
+{
+    unsigned char *settled;
+    int start, i, step, n;
+    if (!graph || !graph->nodes || !graph->edges || !costs ||
+        graph->node_count <= 0 || capacity < graph->node_count) return 0;
+    n = graph->node_count;
+    start = mpNavIndex(graph, from_pad);
+    if (start < 0) return 0;
+    settled = calloc((size_t)n, 1);
+    if (!settled) return 0;
+    for (i = 0; i < n; ++i) costs[i] = -1.0f;
+    costs[start] = 0.0f;
+    for (step = 0; step < n; ++step) {
+        int current = -1, j;
+        for (i = 0; i < n; ++i)
+            if (!settled[i] && costs[i] >= 0.0f &&
+                (current < 0 || costs[i] < costs[current])) current = i;
+        if (current < 0) break;
+        settled[current] = 1;
+        for (j = 0; j < n; ++j) {
+            float dx, dy, dz, next;
+            if (!graph->edges[(size_t)current * n + j] || settled[j]) continue;
+            dx = graph->nodes[current].x - graph->nodes[j].x;
+            dy = graph->nodes[current].y - graph->nodes[j].y;
+            dz = graph->nodes[current].z - graph->nodes[j].z;
+            next = costs[current] + sqrtf(dx * dx + dz * dz + 16.0f * dy * dy);
+            if (costs[j] < 0.0f || next < costs[j]) costs[j] = next;
+        }
+    }
+    free(settled);
+    return 1;
+}
+
+float mpNavGraphCostToPad(const MpNavGraph *graph, const float *costs,
+                          int to_pad)
+{
+    int index;
+    if (!graph || !graph->nodes || !costs) return -1.0f;
+    index = mpNavIndex(graph, to_pad);
+    return index >= 0 ? costs[index] : -1.0f;
 }
 
 int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
