@@ -101,6 +101,7 @@ else
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0047-simulant-goals-ammo.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0048-simulant-projectile-contact.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0049-simulant-combat-movement.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0050-simulant-route-decisions.patch" )
     echo "cloned and patched"
 fi
 

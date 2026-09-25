@@ -143,6 +143,14 @@ collision and doors; the bot may fire while moving and tracks a visible target
 with its arm. If no useful waypoint can be routed, it stands and turns, then
 tries again. The distance transition and hysteresis live in `mp_sim_policy.c`.
 
+`0050-simulant-route-decisions.patch` computes travel cost from the Simulant's
+current waypoint through the actual Facility or generated graph. Pickup choice,
+human pursuit, fight maneuvers and mine retreat skip disconnected destinations
+and account for detours. Pursuit sends the player's current X/Z to GoldenEye's
+character route executor. Both navigation modes supply bounded route prefixes
+so a long path fits the six waypoint slots. The route metric and wall-detour
+case have ROM-free coverage in `test_mp_nav_graph.c`.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them

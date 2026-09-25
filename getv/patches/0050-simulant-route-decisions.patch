@@ -1,0 +1,491 @@
+diff --git a/src/game/mp_nav_graph.h b/src/game/mp_nav_graph.h
+--- a/src/game/mp_nav_graph.h
++++ b/src/game/mp_nav_graph.h
+@@ -4,7 +4,7 @@
+ /* Map-independent runtime graph. Zero-initialize before first build. A stage
+  * adapter supplies pads with STAN associations and an engine-backed direct-walk
+  * check. No stage pointers are retained; rebuild after each stage load.
+- * Keep this declaration in sync with the game-side copy in patch 0037. */
++ * Keep this declaration in sync with the game-side copy through patch 0050. */
+ typedef struct MpNavAnchor {
+     int pad_id;
+     float x, y, z;
+@@ -40,6 +40,13 @@
+  * pad. The complete path is checked before any prefix is returned. */
+ int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
+                     int *pad_ids, int capacity);
++/* Path length along actual links, with height penalized like the goal policy.
++ * Costs are indexed by graph->nodes (sorted pad IDs); unreachable is negative.
++ * Reuse the result for all candidates in a decision tick. */
++int mpNavGraphCosts(const MpNavGraph *graph, int from_pad,
++                    float *costs, int capacity);
++float mpNavGraphCostToPad(const MpNavGraph *graph, const float *costs,
++                          int to_pad);
+ void mpNavGraphClear(MpNavGraph *graph);
+ 
+ #endif
+diff --git a/src/game/padhalllv.c b/src/game/padhalllv.c
+--- a/src/game/padhalllv.c
++++ b/src/game/padhalllv.c
+@@ -422,10 +422,12 @@
+ s32 waypointFindRoute(waypoint *frompoint, waypoint *topoint, waypoint **arr, s32 arrlen)
+ {
+ #ifdef GE_PORT_NATIVE
+-    /* Generated graphs can span many more than the actor's six slots. The
+-     * original in-group solver ignores arrlen, so never pass it these tables. */
+-    if (simulantProbeGeneratedNavActive())
+-        return simulantProbeGeneratedRoute(frompoint, topoint, arr, arrlen);
++    /* The original in-group solver ignores short arrlen. Keep its full route
++     * behavior for authored callers with larger buffers; generated graphs
++     * must always bypass it, regardless of the requested length. */
++    if (simulantProbeNavActive() &&
++        (simulantProbeGeneratedNavActive() || arrlen <= MAX_CHRWAYPOINTS))
++        return simulantProbeBoundedRoute(frompoint, topoint, arr, arrlen);
+ #endif
+     waypoint **arrptr = arr;
+     waygroup *groups = g_CurrentSetup.waypointgroups;
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -42,6 +42,8 @@
+                                    StandTile *stan, f32 angle,
+                                    AIListRecord *ailist, s32 flags);
+ extern waypoint *chrlvStanPathRelated(coord3d *pos, StandTile *stan);
++extern s32 plot_course_for_actor(ChrRecord *chr, coord3d *pos,
++                                 StandTile *stan, SPEED speed);
+ extern PropRecord *chrGiveWeapon(ChrRecord *chr, s32 model, ITEM_IDS item, s32 flags);
+ extern void chrlvIdleAnimationRelated(ChrRecord *chr, f32 duration);
+ 
+@@ -60,6 +62,8 @@
+     unsigned blockedUntil;
+     float sampleX, sampleZ;
+     int goal;
++    int pursuitPlayer;
++    float pursuitX, pursuitZ;
+     int blockedGoal;
+     int stalls;
+     PropRecord *weaponTarget;
+@@ -112,6 +116,10 @@
+ static waygroup *s_originalGroups;
+ static int s_readyStage = -1;
+ static MpNavGraph s_generatedGraph;
++static MpNavGraph s_authoredGraph;
++static float *s_navCosts;
++static unsigned s_navCostsAt;
++static int s_navCostsStart = -1;
+ static waypoint *s_generatedWaypoints;
+ static waygroup *s_generatedGroups;
+ static s32 *s_generatedNeighbours;
+@@ -131,28 +139,36 @@
+            g_CurrentSetup.waypointgroups == s_generatedGroups;
+ }
+ 
+-/* The route solver's result includes its NULL terminator. On an incomplete
+- * route, the engine replans when it advances past the fourth waypoint. */
+-int simulantProbeGeneratedRoute(waypoint *from, waypoint *to,
+-                                waypoint **out, int capacity)
+-{
++int simulantProbeNavActive(void)
++{
++    return s_navWaypoints && s_navCount > 0 &&
++           g_CurrentSetup.pathwaypoints == s_navWaypoints;
++}
++
++/* Both Facility's authored links and generated links use a bounded prefix.
++ * The original in-group solver can overrun the actor's six route slots. */
++int simulantProbeBoundedRoute(waypoint *from, waypoint *to,
++                              waypoint **out, int capacity)
++{
++    const MpNavGraph *graph = simulantProbeGeneratedNavActive()
++        ? &s_generatedGraph : &s_authoredGraph;
+     int ids[5], count, fromIndex = -1, toIndex = -1, i, j;
+     if (!out || capacity < 1) return 0;
+     out[0] = NULL;
+-    if (!simulantProbeGeneratedNavActive() || !from || !to) return 1;
+-    for (i = 0; i < s_generatedGraph.node_count; ++i) {
+-        if (from == &s_generatedWaypoints[i]) fromIndex = i;
+-        if (to == &s_generatedWaypoints[i]) toIndex = i;
++    if (!simulantProbeNavActive() || !from || !to) return 1;
++    for (i = 0; i < s_navCount; ++i) {
++        if (from == &s_navWaypoints[i]) fromIndex = i;
++        if (to == &s_navWaypoints[i]) toIndex = i;
+     }
+     if (fromIndex < 0 || toIndex < 0) return 1;
+     if (capacity > 6) capacity = 6;
+-    count = mpNavGraphRoute(&s_generatedGraph, from->padID, to->padID,
++    count = mpNavGraphRoute(graph, from->padID, to->padID,
+                             ids, capacity - 1);
+     for (i = 0; i < count; ++i) {
+-        for (j = 0; j < s_generatedGraph.node_count; ++j)
+-            if (s_generatedWaypoints[j].padID == ids[i]) break;
+-        if (j == s_generatedGraph.node_count) break;
+-        out[i] = &s_generatedWaypoints[j];
++        for (j = 0; j < s_navCount; ++j)
++            if (s_navWaypoints[j].padID == ids[i]) break;
++        if (j == s_navCount) break;
++        out[i] = &s_navWaypoints[j];
+     }
+     out[i++] = NULL;
+     /* plot_course_for_actor copies all six slots even for a short route. */
+@@ -212,6 +228,7 @@
+     memset(route, 0, sizeof(*route));
+     route->goal = route->blockedGoal = -1;
+     route->combatGoal = -1;
++    route->pursuitPlayer = -1;
+ }
+ 
+ static void simProbeResetRuntime(void)
+@@ -259,6 +276,11 @@
+     s_originalGroups = NULL;
+     s_navWaypoints = NULL;
+     s_navCount = 0;
++    free(s_navCosts);
++    s_navCosts = NULL;
++    s_navCostsStart = -1;
++    s_navCostsAt = 0;
++    mpNavGraphClear(&s_authoredGraph);
+     free(s_generatedWaypoints);
+     free(s_generatedGroups);
+     free(s_generatedNeighbours);
+@@ -286,11 +308,72 @@
+     simProbeResetRuntime();
+ }
+ 
++/* Facility's authored links and generated links feed the same route metric.
++ * PD uses nearby waypoint attachment and path cost in bot navigation
++ * (n64decomp/perfect_dark @ 169ed48bdcbfb3b568b028bd5bebb27680073514,
++ * src/game/padhalllv.c and src/game/botcmd.c, MIT). These adapters use GE's
++ * live stage links and preserve its collision and door movement executor. */
++static int simProbeAuthoredLink(const MpNavAnchor *from,
++                                const MpNavAnchor *to, void *context)
++{
++    waypoint *points = context;
++    int i;
++    for (i = 0; i < s_navCount && points[i].padID != from->pad_id; ++i) {}
++    if (i == s_navCount || !points[i].neighbours) return 0;
++    for (s32 *n = points[i].neighbours; *n >= 0; ++n)
++        if (*n < s_navCount && points[*n].padID == to->pad_id) return 1;
++    return 0;
++}
++
++static const MpNavGraph *simProbeDecisionGraph(void)
++{
++    return simulantProbeGeneratedNavActive() ? &s_generatedGraph : &s_authoredGraph;
++}
++
++static int simProbeNavCosts(ChrRecord *chr, unsigned polls)
++{
++    const MpNavGraph *graph = simProbeDecisionGraph();
++    waypoint *start;
++    if (!graph->node_count || !s_navCosts || !chr->prop || !chr->prop->stan)
++        return 0;
++    start = chrlvStanPathRelated(&chr->prop->pos, chr->prop->stan);
++    if (!start) return 0;
++    if (s_navCostsStart != start->padID || polls - s_navCostsAt >= 30) {
++        if (!mpNavGraphCosts(graph, start->padID, s_navCosts,
++                              graph->node_count)) return 0;
++        s_navCostsStart = start->padID;
++        s_navCostsAt = polls;
++    }
++    return 1;
++}
++
++static float simProbeTravelCost(ChrRecord *chr, coord3d *pos, StandTile *stan)
++{
++    waypoint *end;
++    float path, sx, sy, sz, ex, ey, ez;
++    if (!stan || !s_navCosts || s_navCostsStart < 0) return -1.0f;
++    end = chrlvStanPathRelated(pos, stan);
++    if (!end) return -1.0f;
++    path = mpNavGraphCostToPad(simProbeDecisionGraph(), s_navCosts, end->padID);
++    if (path < 0.0f) return -1.0f;
++    PadRecord *startPad = &g_CurrentSetup.pads[s_navCostsStart];
++    PadRecord *endPad = &g_CurrentSetup.pads[end->padID];
++    sx = chr->prop->pos.x - startPad->pos.x;
++    sy = chr->prop->pos.y - startPad->pos.y;
++    sz = chr->prop->pos.z - startPad->pos.z;
++    ex = pos->x - endPad->pos.x;
++    ey = pos->y - endPad->pos.y;
++    ez = pos->z - endPad->pos.z;
++    return path + sqrtf(sx*sx + sz*sz + 16.0f*sy*sy) +
++           sqrtf(ex*ex + ez*ez + 16.0f*ey*ey);
++}
++
+ /* The solo and MP Facility pad lists have identical positions and indexes.
+  * Verify the live stage before installing the original solo path tables: the
+  * MP setup's objects, spawn pads and original pads stay untouched. */
+ static int simProbeInstallFacilityNav(int stage)
+ {
++    MpNavAnchor *anchors;
+     if (stage != LEVELID_FACILITY && stage != LEVELID_FACILITY_MP) return 0;
+     if (g_CurrentSetup.pathwaypoints == s_navWaypoints &&
+         g_CurrentSetup.waypointgroups == UsetuparkZ.waypointgroups) return 1;
+@@ -331,11 +414,41 @@
+     if (!count || count >= 1024) return 0;
+     s_navWaypoints = UsetuparkZ.pathwaypoints;
+     s_navCount = count;
++    anchors = malloc((size_t)count * sizeof(*anchors));
++    s_navCosts = malloc((size_t)count * sizeof(*s_navCosts));
++    if (!anchors || !s_navCosts) {
++        free(anchors);
++        free(s_navCosts);
++        s_navCosts = NULL;
++        s_navWaypoints = NULL;
++        s_navCount = 0;
++        s_probe.failedPads = g_CurrentSetup.pads;
++        return 0;
++    }
++    for (int i = 0; i < count; ++i) {
++        PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[i].padID];
++        anchors[i] = (MpNavAnchor){s_navWaypoints[i].padID,
++            pad->pos.x, pad->pos.y, pad->pos.z, pad->stan != NULL};
++    }
++    int built = mpNavGraphBuild(&s_authoredGraph, stage, anchors, count,
++        count - 1, simProbeAuthoredLink, s_navWaypoints);
++    free(anchors);
++    if (!built) {
++        free(s_navCosts);
++        s_navCosts = NULL;
++        s_navWaypoints = NULL;
++        s_navCount = 0;
++        s_probe.failedPads = g_CurrentSetup.pads;
++        return 0;
++    }
+     s_originalWaypoints = g_CurrentSetup.pathwaypoints;
+     s_originalGroups = g_CurrentSetup.waypointgroups;
+     g_CurrentSetup.pathwaypoints = s_navWaypoints;
+     g_CurrentSetup.waypointgroups = UsetuparkZ.waypointgroups;
+     sysLogPrintf(LOG_NOTE, "sim probe: installed Facility navigation (%d waypoints)", s_navCount);
++    sysLogPrintf(LOG_NOTE, "sim nav: Facility links=%d components=%d largest=%d",
++                 s_authoredGraph.edge_count, s_authoredGraph.component_count,
++                 s_authoredGraph.largest_component);
+     return 1;
+ }
+ 
+@@ -391,6 +504,8 @@
+                                     sizeof(*s_generatedNeighbours));
+     if (!s_generatedWaypoints || !s_generatedGroups || !s_generatedMembers ||
+         !s_generatedNeighbours) goto failed;
++    s_navCosts = malloc((size_t)n * sizeof(*s_navCosts));
++    if (!s_navCosts) goto failed;
+     for (i = 0; i < n; ++i) {
+         waypoint *point = &s_generatedWaypoints[i];
+         point->padID = s_generatedGraph.nodes[i].pad_id;
+@@ -423,6 +538,8 @@
+     free(s_generatedGroups);
+     free(s_generatedMembers);
+     free(s_generatedNeighbours);
++    free(s_navCosts);
++    s_navCosts = NULL;
+     s_generatedWaypoints = NULL;
+     s_generatedGroups = NULL;
+     s_generatedMembers = NULL;
+@@ -529,27 +646,33 @@
+                 chrGetEquippedWeaponProp(chr, GUNLEFT);
+     float armour = mpCombatSimulantArmour(chr);
+     int seen = 0;
++    if (!simProbeNavCosts(chr, polls))
++        return (SimProbePickupChoice){ MP_SIM_GOAL_PURSUIT, NULL };
+     for (PropRecord *prop = g_ActivePropsHead; prop && seen++ < MAX_PROPS;
+          prop = prop->next) {
+-        float dx = prop->pos.x - chr->prop->pos.x;
+-        float dy = prop->pos.y - chr->prop->pos.y;
+-        float dz = prop->pos.z - chr->prop->pos.z;
+-        float distance = sqrtf(dx * dx + dz * dz + 16.0f * dy * dy);
++        float distance;
+         float score = 0.0f;
+         MpSimGoalKind kind = MP_SIM_GOAL_PURSUIT;
+         if (!armed && simProbeUsableWorldGun(prop) &&
+             !(prop == route->blockedWeapon && polls < route->weaponBlockedUntil)) {
+             kind = MP_SIM_GOAL_WEAPON;
++            distance = simProbeTravelCost(chr, &prop->pos, prop->stan);
++            if (distance < 0.0f) continue;
+             score = mpSimPickupScore(simProbeWeaponKind(prop->weapon->weaponnum), distance);
+         } else if (simProbeUsableArmour(prop, armour) &&
+                    !(prop == route->blockedArmour && polls < route->armourBlockedUntil)) {
+             kind = MP_SIM_GOAL_ARMOUR;
++            distance = simProbeTravelCost(chr, &prop->pos, prop->stan);
++            if (distance < 0.0f) continue;
+             score = mpSimArmourPickupScore(armour,
+                 mpSimArmourFromPickup(((BodyArmourRecord *)prop->obj)->amount), distance);
+             if (score < 35.0f) score = 0.0f;
+         } else if (!(prop == route->blockedAmmo && polls < route->ammoBlockedUntil)) {
+             int knives = simProbeAmmoInCrate(prop, AMMO_KNIFE);
+             int mines = simProbeAmmoInCrate(prop, AMMO_REMOTEMINE);
++            if (!knives && !mines) continue;
++            distance = simProbeTravelCost(chr, &prop->pos, prop->stan);
++            if (distance < 0.0f) continue;
+             float knifeScore = knives ? mpSimAmmoPickupScore(MP_SIM_KNIFE,
+                 route->knifeAmmo, get_max_ammo_for_type(AMMO_KNIFE), distance) : 0.0f;
+             float mineScore = mines ? mpSimAmmoPickupScore(MP_SIM_MINE,
+@@ -773,19 +896,17 @@
+     if (polls < route->retreatRetryAfter) return chr->actiontype == ACT_GOPOS;
+     route->retreatRetryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+     start = chrlvStanPathRelated(&chr->prop->pos, chr->prop->stan);
+-    if (!start) return 0;
++    if (!start || !simProbeNavCosts(chr, polls)) return 0;
+     for (int i = 0; i < s_navCount; ++i) {
+         PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[i].padID];
+         float mx = pad->pos.x - mine->runtime_pos.x;
+         float mz = pad->pos.z - mine->runtime_pos.z;
+-        float dx = pad->pos.x - chr->prop->pos.x;
+-        float dz = pad->pos.z - chr->prop->pos.z;
+         if (&s_navWaypoints[i] == start ||
+             mx * mx + mz * mz < 430.0f * 430.0f ||
+-            (simulantProbeGeneratedNavActive() &&
+-             !mpNavGraphReachable(&s_generatedGraph, start->padID,
+-                                  s_navWaypoints[i].padID))) continue;
+-        float distance = dx * dx + dz * dz;
++            mpNavGraphCostToPad(simProbeDecisionGraph(), s_navCosts,
++                                s_navWaypoints[i].padID) < 0.0f) continue;
++        float distance = mpNavGraphCostToPad(simProbeDecisionGraph(), s_navCosts,
++                                             s_navWaypoints[i].padID);
+         if (distance < best) { best = distance; goal = i; }
+     }
+     if (goal < 0 || !chrGoToPad(chr, s_navWaypoints[goal].padID,
+@@ -1186,22 +1307,23 @@
+     route->combatRetryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+ 
+     waypoint *start = chrlvStanPathRelated(&chr->prop->pos, chr->prop->stan);
++    if (!start || !simProbeNavCosts(chr, polls)) return 0;
+     int bestGoal = -1;
+     float best = 1.0e30f;
+-    if (start) for (int i = 0; i < s_navCount; ++i) {
++    for (int i = 0; i < s_navCount; ++i) {
+         waypoint *point = &s_navWaypoints[i];
+         if (point == start || (i == route->blockedGoal && polls < route->blockedUntil) ||
+-            (simulantProbeGeneratedNavActive() &&
+-             !mpNavGraphReachable(&s_generatedGraph, start->padID, point->padID)))
++            mpNavGraphCostToPad(simProbeDecisionGraph(), s_navCosts,
++                                point->padID) < 0.0f)
+             continue;
+         PadRecord *pad = &g_CurrentSetup.pads[point->padID];
+-        float mx = pad->pos.x - chr->prop->pos.x;
+-        float mz = pad->pos.z - chr->prop->pos.z;
+-        float travel = sqrtf(mx * mx + mz * mz);
++        float travel = mpNavGraphCostToPad(simProbeDecisionGraph(), s_navCosts,
++                                            point->padID);
+         float px = pad->pos.x - target->prop->pos.x;
+         float pz = pad->pos.z - target->prop->pos.z;
+         float newRange = sqrtf(px * px + pz * pz);
+-        float lateral = (tx * mz - tz * mx) / (range + 1.0f);
++        float lateral = (tx * (pad->pos.z - chr->prop->pos.z) -
++                         tz * (pad->pos.x - chr->prop->pos.x)) / (range + 1.0f);
+         if (travel < 135.0f || travel > 650.0f ||
+             fabsf(pad->pos.y - target->prop->pos.y) > 150.0f) continue;
+         float score;
+@@ -1255,8 +1377,8 @@
+                           SimProbePickupChoice pickup)
+ {
+     int goal = -1;
+-    float best = 1.0e30f;
+     float targetDist = 1.0e30f;
++    int targetPlayer = -1;
+     const struct player *target = NULL;
+     waypoint *start;
+     if (!chr->prop || !chr->prop->stan ||
+@@ -1313,7 +1435,7 @@
+     }
+     if (polls < route->retryAfter) return;
+     start = chrlvStanPathRelated(&chr->prop->pos, chr->prop->stan);
+-    if (!start) {
++    if (!start || !simProbeNavCosts(chr, polls)) {
+         route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+         sysLogPrintf(LOG_NOTE, "sim probe: no waypoint near character STAN");
+         return;
+@@ -1321,46 +1443,48 @@
+     route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+     for (int p = 0; p < getPlayerCount() && p < 4; ++p) {
+         const struct player *player = g_playerPointers[p];
+-        if (!player || !player->prop || player->bonddead) continue;
+-        float dx = chr->prop->pos.x - player->prop->pos.x;
+-        float dy = chr->prop->pos.y - player->prop->pos.y;
+-        float dz = chr->prop->pos.z - player->prop->pos.z;
+-        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
+-        if (dist < targetDist) { targetDist = dist; target = player; }
++        if (!player || !player->prop || player->bonddead ||
++            !player->prop->stan) continue;
++        float dist = simProbeTravelCost(chr, &player->prop->pos,
++                                         player->prop->stan);
++        if (dist >= 0.0f && dist < targetDist) {
++            targetDist = dist;
++            target = player;
++            targetPlayer = p;
++        }
+     }
+     if (!target) return;
+-    {
+-        float dx = chr->prop->pos.x - target->prop->pos.x;
+-        float dz = chr->prop->pos.z - target->prop->pos.z;
+-        /* No attack behavior yet. Don't circle an adjacent player just to
+-         * reach the next waypoint while the player is standing still. */
+-        if (dx * dx + dz * dz < 200.0f * 200.0f) return;
+-    }
+-    for (int i = 0; i < s_navCount; ++i) {
+-        if (&s_navWaypoints[i] == start ||
+-            (simulantProbeGeneratedNavActive() &&
+-             !mpNavGraphReachable(&s_generatedGraph, start->padID,
+-                                  s_navWaypoints[i].padID)) ||
+-            (i == route->blockedGoal && polls < route->blockedUntil)) continue;
+-        PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[i].padID];
+-        float dx = pad->pos.x - target->prop->pos.x;
+-        float dz = pad->pos.z - target->prop->pos.z;
+-        float dy = pad->pos.y - target->prop->pos.y;
+-        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
+-        if (dist < best) { best = dist; goal = i; }
+-    }
++    waypoint *destination = chrlvStanPathRelated(&target->prop->pos,
++                                                   target->prop->stan);
++    if (!destination || destination < s_navWaypoints ||
++        destination >= s_navWaypoints + s_navCount) return;
++    goal = (int)(destination - s_navWaypoints);
+     if (chr->actiontype == ACT_STAND && route->goal >= 0) {
+         const PadRecord *pad = &g_CurrentSetup.pads[s_navWaypoints[route->goal].padID];
+         float dx = chr->prop->pos.x - pad->pos.x;
+         float dz = chr->prop->pos.z - pad->pos.z;
+         if (dx * dx + dz * dz > 180.0f * 180.0f) route->goal = -1;
+     }
+-    if (goal >= 0 && goal != route->goal) {
+-        int padid = s_navWaypoints[goal].padID;
+-        int ok = chrGoToPad(chr, padid, SPEED_SPRINT);
+-        sysLogPrintf(LOG_NOTE, "sim probe: route to waypoint %d (pad %d): %s",
+-                     goal, padid, ok ? "running" : "unreachable");
+-        if (ok) route->goal = goal;
++    float movedX = target->prop->pos.x - route->pursuitX;
++    float movedZ = target->prop->pos.z - route->pursuitZ;
++    if (goal != route->goal || targetPlayer != route->pursuitPlayer ||
++        movedX * movedX + movedZ * movedZ > 100.0f * 100.0f ||
++        chr->actiontype != ACT_GOPOS) {
++        /* Route to the player's X/Z, using the goal pad's floor height. This
++         * keeps eye height out of the character movement target. */
++        coord3d destinationPos = target->prop->pos;
++        destinationPos.y = g_CurrentSetup.pads[destination->padID].pos.y;
++        int ok = plot_course_for_actor(chr, &destinationPos,
++                                        target->prop->stan, SPEED_SPRINT);
++        sysLogPrintf(LOG_NOTE, "sim probe: route to player %d via pad %d: %s",
++                     targetPlayer + 1, destination->padID,
++                     ok ? "running" : "unreachable");
++        if (ok) {
++            route->goal = goal;
++            route->pursuitPlayer = targetPlayer;
++            route->pursuitX = target->prop->pos.x;
++            route->pursuitZ = target->prop->pos.z;
++        }
+     }
+ }
+ 
+diff --git a/src/game/simulant_probe.h b/src/game/simulant_probe.h
+--- a/src/game/simulant_probe.h
++++ b/src/game/simulant_probe.h
+@@ -8,8 +8,9 @@
+ struct PropRecord *simulantProbeGetProp(void);
+ int simulantProbeGeneratedRequested(void);
+ int simulantProbeGeneratedNavActive(void);
+-int simulantProbeGeneratedRoute(struct waypoint *from, struct waypoint *to,
+-                                struct waypoint **out, int capacity);
++int simulantProbeNavActive(void);
++int simulantProbeBoundedRoute(struct waypoint *from, struct waypoint *to,
++                              struct waypoint **out, int capacity);
+ 
+ /* Temporary PC-only proof that an AI character can exist beside MP players. */
+ void simulantProbePoll(void);
