@@ -52,6 +52,18 @@ static int doorway_walk(const MpNavAnchor *a, const MpNavAnchor *b, void *unused
            (x == 1 && y == 2) || (x == 2 && y == 1);
 }
 
+/* A stage can put spawn and weapon pads at opposite ends of a bent hall.
+ * Floor-tile centres supply the missing turns while the old pad IDs stay put. */
+static int corner_walk(const MpNavAnchor *a, const MpNavAnchor *b, void *unused)
+{
+    int x = a->pad_id, y = b->pad_id;
+    (void)unused;
+    return (x == 0 && y == 3) || (x == 3 && y == 0) ||
+           (x == 3 && y == 4) || (x == 4 && y == 3) ||
+           (x == 4 && y == 5) || (x == 5 && y == 4) ||
+           (x == 5 && y == 1) || (x == 1 && y == 5);
+}
+
 int main(void)
 {
     MpNavGraph graph = {0}, reordered = {0};
@@ -128,6 +140,20 @@ int main(void)
         CHECK(mpNavGraphCostToPad(&graph, costs, 6) == 30.0f);
         CHECK(mpNavGraphCostToPad(&graph, costs, 2) >
               mpNavGraphCostToPad(&graph, costs, 6));
+        mpNavGraphClear(&graph);
+    }
+    {
+        MpNavAnchor sparse[] = {{0, 0, 0, 0, 1}, {1, 10, 0, 10, 1}};
+        MpNavAnchor floor[] = {{0, 0, 0, 0, 1}, {1, 10, 0, 10, 1},
+                               {3, 0, 0, 5, 1}, {4, 5, 0, 5, 1},
+                               {5, 10, 0, 5, 1}};
+        CHECK(mpNavGraphBuild(&graph, 50, sparse, 2, 1, corner_walk, NULL));
+        CHECK(!mpNavGraphReachable(&graph, 0, 1));
+        CHECK(mpNavGraphBuild(&graph, 50, floor, 5, 4, corner_walk, NULL));
+        CHECK(graph.component_count == 1);
+        CHECK(mpNavGraphRoute(&graph, 0, 1, route, 6) == 5);
+        CHECK(route[0] == 0 && route[1] == 3 && route[2] == 4 &&
+              route[3] == 5 && route[4] == 1);
         mpNavGraphClear(&graph);
     }
     {

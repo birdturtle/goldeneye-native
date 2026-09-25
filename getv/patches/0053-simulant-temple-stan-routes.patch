@@ -1,0 +1,278 @@
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -46,6 +46,10 @@
+                                  StandTile *stan, SPEED speed);
+ extern PropRecord *chrGiveWeapon(ChrRecord *chr, s32 model, ITEM_IDS item, s32 flags);
+ extern void chrlvIdleAnimationRelated(ChrRecord *chr, f32 duration);
++extern StandTile *stanTileEnd;
++extern u8 list_of_tilesizes[];
++extern void getTileMidPoint(StandTile *tile, coord3d *out);
++extern bool stanTileHasZeroArea(StandTile *tile);
+ 
+ /* This ID is outside the normal stage guard numbering (which starts at 5000).
+  * The slot is checked against the current stage's array before each use. */
+@@ -54,6 +58,7 @@
+ #define SIM_ROUTE_STALL_POLLS 240
+ #define SIM_FLASH_POLLS 3
+ #define SIM_RECOIL_POLLS 5
++#define SIM_STAN_NAV_LIMIT 1024
+ 
+ typedef struct SimProbeRoute {
+     unsigned retryAfter;
+@@ -62,6 +67,7 @@
+     float sampleX, sampleZ;
+     int goal;
+     int pursuitPlayer;
++    int targetPlayer;
+     float pursuitX, pursuitZ;
+     int blockedGoal;
+     int stalls;
+@@ -124,6 +130,8 @@
+ static s32 *s_generatedNeighbours;
+ static s32 *s_generatedMembers;
+ static PadRecord *s_generatedFailedPads;
++static PadRecord *s_originalPads;
++static PadRecord *s_generatedPads;
+ static s32 s_generatedGroupNeighbours[] = {-1};
+ 
+ int simulantProbeGeneratedRequested(void)
+@@ -228,6 +236,7 @@
+     route->goal = route->blockedGoal = -1;
+     route->combatGoal = -1;
+     route->pursuitPlayer = -1;
++    route->targetPlayer = -1;
+ }
+ 
+ static void simProbeResetRuntime(void)
+@@ -271,6 +280,8 @@
+         g_CurrentSetup.waypointgroups = s_originalGroups;
+     if (g_CurrentSetup.waypointgroups == s_generatedGroups && s_originalGroups)
+         g_CurrentSetup.waypointgroups = s_originalGroups;
++    if (g_CurrentSetup.pads == s_generatedPads && s_originalPads)
++        g_CurrentSetup.pads = s_originalPads;
+     s_originalWaypoints = NULL;
+     s_originalGroups = NULL;
+     s_navWaypoints = NULL;
+@@ -284,6 +295,8 @@
+     free(s_generatedGroups);
+     free(s_generatedNeighbours);
+     free(s_generatedMembers);
++    free(s_generatedPads);
++    s_generatedPads = s_originalPads = NULL;
+     s_generatedWaypoints = NULL;
+     s_generatedGroups = NULL;
+     s_generatedNeighbours = NULL;
+@@ -466,10 +479,68 @@
+            tile == pads[to->pad_id].stan;
+ }
+ 
++/* Temple has no authored MP waypoints. Its setup pads mark weapons, spawns and
++ * other objects, leaving gaps at turns. Add points from the live STAN floor
++ * while retaining the original pad IDs. The copy has the original terminator
++ * at the same index, so setup code that scans named pads sees the same list. */
++static int simProbeStanPadCount(void)
++{
++    StandTile *tile;
++    int count = 0, visited = 0;
++    if (!standTileStart || !stanTileEnd) return 0;
++    tile = (StandTile *)((u8 *)standTileStart + 0x80);
++    if ((uintptr_t)tile > (uintptr_t)stanTileEnd) return 0;
++    while ((uintptr_t)tile <= (uintptr_t)stanTileEnd) {
++        int points = GE_NIB(tile->tail.half, 12);
++        coord3d center;
++        if (++visited > SIM_STAN_NAV_LIMIT || points < 3 || points > 10 ||
++            !list_of_tilesizes[points]) return 0;
++        if (!stanTileHasZeroArea(tile)) {
++            getTileMidPoint(tile, &center);
++            if (stanTestPointWithinTileBoundsMaybe(tile, center.x, center.z))
++                ++count;
++        }
++        tile = (StandTile *)((u8 *)tile + list_of_tilesizes[points]);
++    }
++    return count;
++}
++
++static int simProbeMakeStanPads(int originalCount)
++{
++    StandTile *tile;
++    int count = simProbeStanPadCount(), written = 0;
++    if (!count) return 0;
++    s_generatedPads = calloc((size_t)originalCount + 1 + count,
++                             sizeof(*s_generatedPads));
++    if (!s_generatedPads) return 0;
++    memcpy(s_generatedPads, g_CurrentSetup.pads,
++           ((size_t)originalCount + 1) * sizeof(*s_generatedPads));
++    for (tile = (StandTile *)((u8 *)standTileStart + 0x80);
++         (uintptr_t)tile <= (uintptr_t)stanTileEnd;
++         tile = (StandTile *)((u8 *)tile + list_of_tilesizes[GE_NIB(tile->tail.half, 12)])) {
++        coord3d center;
++        if (stanTileHasZeroArea(tile)) continue;
++        getTileMidPoint(tile, &center);
++        if (!stanTestPointWithinTileBoundsMaybe(tile, center.x, center.z)) continue;
++        PadRecord *pad = &s_generatedPads[originalCount + 1 + written++];
++        pad->pos = center;
++        pad->up.y = 1.0f;
++        pad->look.z = 1.0f;
++        pad->stan = tile;
++    }
++    if (written != count) {
++        free(s_generatedPads);
++        s_generatedPads = NULL;
++        return 0;
++    }
++    return count;
++}
++
+ static int simProbeInstallGeneratedNav(int stage)
+ {
+     MpNavAnchor *anchors = NULL;
+-    int pads = 0, i, j, offset = 0, n;
++    int pads = 0, extra = 0, i, j, offset = 0, n;
++    PadRecord *navPads;
+     if (simulantProbeGeneratedNavActive()) return 1;
+     if (!g_CurrentSetup.pads || !g_CurrentSetup.pathwaypoints ||
+         !g_CurrentSetup.waypointgroups ||
+@@ -478,21 +549,33 @@
+         g_CurrentSetup.pads == s_generatedFailedPads) return 0;
+     while (pads < 1024 && g_CurrentSetup.pads[pads].plink) ++pads;
+     if (pads >= 1024 || pads < 2) goto failed;
+-    anchors = malloc((size_t)pads * sizeof(*anchors));
++    if (stage == LEVELID_TEMPLE) {
++        extra = simProbeMakeStanPads(pads);
++        if (!extra)
++            sysLogPrintf(LOG_NOTE, "sim nav: Temple STAN sampling unavailable; using setup pads");
++    }
++    navPads = s_generatedPads ? s_generatedPads : g_CurrentSetup.pads;
++    anchors = malloc(((size_t)pads + extra) * sizeof(*anchors));
+     if (!anchors) goto failed;
+     for (i = 0; i < pads; ++i) {
+-        PadRecord *pad = &g_CurrentSetup.pads[i];
++        PadRecord *pad = &navPads[i];
+         anchors[i] = (MpNavAnchor){i, pad->pos.x, pad->pos.y, pad->pos.z,
+                                    pad->stan != NULL};
+     }
+-    if (!mpNavGraphBuild(&s_generatedGraph, stage, anchors, pads, 24,
+-                         simProbeDirectWalk, g_CurrentSetup.pads)) goto failed;
++    for (i = 0; i < extra; ++i) {
++        int id = pads + 1 + i;
++        PadRecord *pad = &navPads[id];
++        anchors[pads + i] = (MpNavAnchor){id, pad->pos.x, pad->pos.y,
++                                          pad->pos.z, 1};
++    }
++    if (!mpNavGraphBuild(&s_generatedGraph, stage, anchors, pads + extra, 24,
++                         simProbeDirectWalk, navPads)) goto failed;
+     free(anchors);
+     anchors = NULL;
+     n = s_generatedGraph.node_count;
+     sysLogPrintf(LOG_NOTE,
+-                 "sim nav: stage=%d pads=%d nodes=%d edges=%d components=%d largest=%d isolated=%d hops=%d",
+-                 stage, pads, n, s_generatedGraph.edge_count,
++                 "sim nav: stage=%d pads=%d stan=%d nodes=%d edges=%d components=%d largest=%d isolated=%d hops=%d",
++                 stage, pads, extra, n, s_generatedGraph.edge_count,
+                  s_generatedGraph.component_count, s_generatedGraph.largest_component,
+                  s_generatedGraph.isolated_nodes, s_generatedGraph.max_route_hops);
+     if (n < 2 || s_generatedGraph.largest_component < 2) goto failed;
+@@ -526,6 +609,10 @@
+     s_navCount = n;
+     s_originalWaypoints = g_CurrentSetup.pathwaypoints;
+     s_originalGroups = g_CurrentSetup.waypointgroups;
++    if (s_generatedPads) {
++        s_originalPads = g_CurrentSetup.pads;
++        g_CurrentSetup.pads = s_generatedPads;
++    }
+     g_CurrentSetup.pathwaypoints = s_generatedWaypoints;
+     g_CurrentSetup.waypointgroups = s_generatedGroups;
+     return 1;
+@@ -536,6 +623,8 @@
+     free(s_generatedWaypoints);
+     free(s_generatedGroups);
+     free(s_generatedMembers);
++    free(s_generatedPads);
++    s_generatedPads = s_originalPads = NULL;
+     free(s_generatedNeighbours);
+     free(s_navCosts);
+     s_navCosts = NULL;
+@@ -1107,6 +1196,8 @@
+ {
+     PropRecord *gun = chrGetEquippedWeaponProp(chr, GUNRIGHT);
+     float nearest = MP_SIM_COMBAT_SIGHT_RANGE * MP_SIM_COMBAT_SIGHT_RANGE;
++    float heldDistance = nearest;
++    int heldVictim = -1;
+     int victim = -1;
+     if (!chr->model || !chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return 0;
+@@ -1150,7 +1241,7 @@
+         float dy = player->prop->pos.y - chr->prop->pos.y;
+         float dz = player->prop->pos.z - chr->prop->pos.z;
+         float dist = dx * dx + dz * dz + 16.0f * dy * dy;
+-        if (dist >= nearest || !mpSimCombatTargetInRange(dx, dy, dz)) continue;
++        if (!mpSimCombatTargetInRange(dx, dy, dz)) continue;
+         chrSetMoving(chr, 0);
+         int visible = stanTestLineUnobstructed(&tile, chr->prop->pos.x,
+                            chr->prop->pos.z, player->prop->pos.x,
+@@ -1159,7 +1250,16 @@
+                            CDTYPE_AIOPAQUE, chr->chrheight - 20.0f,
+                            chr->chrheight - 20.0f, 0.0f, 1.0f);
+         chrSetMoving(chr, 1);
+-        if (visible && tile == player->prop->stan) { nearest = dist; victim = i; }
++        if (visible && tile == player->prop->stan) {
++            if (i == route->targetPlayer) { heldVictim = i; heldDistance = dist; }
++            if (dist < nearest) { nearest = dist; victim = i; }
++        }
++    }
++    /* PD keeps its current target while it remains in sight unless a much
++     * closer opponent is available. Movement and gun policy share this ID. */
++    if (heldVictim >= 0 && (victim < 0 || heldDistance <= nearest * 1.5f)) {
++        victim = heldVictim;
++        nearest = heldDistance;
+     }
+     if (victim < 0) {
+         if (route->recoilUntil) {
+@@ -1170,6 +1270,7 @@
+         chr->aimendsideback = 0.0f;
+         return 0;
+     }
++    route->targetPlayer = victim;
+ 
+     const struct player *target = g_playerPointers[victim];
+     float dx = target->prop->pos.x - chr->prop->pos.x;
+@@ -1441,19 +1542,38 @@
+         return;
+     }
+     route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
++    if (route->targetPlayer >= 0 && route->targetPlayer < getPlayerCount()) {
++        const struct player *candidate = g_playerPointers[route->targetPlayer];
++        if (candidate && candidate->prop && candidate->prop->stan &&
++            !candidate->bonddead) {
++            float dist = simProbeTravelCost(chr, &candidate->prop->pos,
++                                             candidate->prop->stan);
++            if (dist >= 0.0f) {
++                targetDist = dist;
++                targetPlayer = route->targetPlayer;
++                target = candidate;
++            }
++        }
++    }
++    int holdingTarget = target != NULL;
+     for (int p = 0; p < getPlayerCount() && p < 4; ++p) {
+         const struct player *player = g_playerPointers[p];
+         if (!player || !player->prop || player->bonddead ||
+             !player->prop->stan) continue;
+         float dist = simProbeTravelCost(chr, &player->prop->pos,
+                                          player->prop->stan);
+-        if (dist >= 0.0f && dist < targetDist) {
++        if (dist >= 0.0f &&
++            (!target || (!holdingTarget && dist < targetDist) ||
++             (holdingTarget && p != route->targetPlayer &&
++              dist < targetDist * 0.65f))) {
+             targetDist = dist;
+             target = player;
+             targetPlayer = p;
++            holdingTarget = 0;
+         }
+     }
+     if (!target) return;
++    route->targetPlayer = targetPlayer;
+     waypoint *destination = chrlvStanPathRelated(&target->prop->pos,
+                                                    target->prop->stan);
+     if (!destination || destination < s_navWaypoints ||
