@@ -151,6 +151,15 @@ character route executor. Both navigation modes supply bounded route prefixes
 so a long path fits the six waypoint slots. The route metric and wall-detour
 case have ROM-free coverage in `test_mp_nav_graph.c`.
 
+`0051-simulant-route-continuation.patch` replans after the character consumes
+the bounded waypoint prefix, before it starts walking straight toward a distant
+goal. The stage graph can also bridge connected waypoint clusters.
+
+`0052-simulant-combat-sight.patch` raises unobstructed target acquisition to
+1500 game units and widens firearm tracking while the character moves.
+Thrown weapons and melee retain their tighter aim limits. The sight envelope
+is covered by the ROM-free `test_mp_sim_policy.c`.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them
