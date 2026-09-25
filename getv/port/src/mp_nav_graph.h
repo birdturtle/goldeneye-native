@@ -47,6 +47,10 @@ int mpNavGraphCosts(const MpNavGraph *graph, int from_pad,
                     float *costs, int capacity);
 float mpNavGraphCostToPad(const MpNavGraph *graph, const float *costs,
                           int to_pad);
+/* Finds single nodes whose removal disconnects a component. Returns the total
+ * count, writes up to capacity pad IDs, and reports single-edge bottlenecks. */
+int mpNavGraphBottlenecks(const MpNavGraph *graph, int *pad_ids, int capacity,
+                          int *bridge_count);
 void mpNavGraphClear(MpNavGraph *graph);
 
 #endif

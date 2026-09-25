@@ -1,0 +1,214 @@
+--- a/src/game/chraction.c
++++ b/src/game/chraction.c
+@@ -36,6 +36,7 @@
+ #ifdef GE_PORT_NATIVE
+ #include "mp_combat.h"
+ #include "mp_simulants.h"
++#include "simulant_probe.h"
+ #endif
+ 
+ #ifdef GE_PORT_NATIVE
+@@ -9308,6 +9309,7 @@
+                     sub_GAME_7F0281F4(self);
+                     doorsChooseSwingDirection(self_prop, phi_s3->door);
+                     doorActivate(phi_s3->door, 1);
++                    simulantProbeTraceDoor(self, phi_s3);
+ 
+                     if (((self->hidden & CHRHIDDEN_OFFSCREEN_PATROL) == 0)
+                         && (objecthandlerGetModelAnim(self->model) != (struct ModelAnimation *)GE_ANIM_AT(GE_ANIMOFF_ANIM_DATA_idle_unarmed))
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -133,6 +133,78 @@
+ static PadRecord *s_originalPads;
+ static PadRecord *s_generatedPads;
+ static s32 s_generatedGroupNeighbours[] = {-1};
++
++static int simProbeNavTraceEnabled(void)
++{
++    static int enabled = -1;
++    if (enabled < 0) {
++        const char *value = getenv("GETV_SIM_NAV_TRACE");
++        enabled = value && value[0] == '1' && value[1] == '\0';
++    }
++    return enabled;
++}
++
++/* Report the route the actor received, not merely that chrGoToPad accepted it.
++ * Native movement can still fail on a wall, door, or character-width check. */
++static void simProbeTraceRoute(ChrRecord *chr, unsigned polls, const char *reason)
++{
++    char path[96];
++    int used = 0;
++    if (!simProbeNavTraceEnabled() || chr->actiontype != ACT_GOPOS) return;
++    path[0] = '\0';
++    for (int i = 0; i < MAX_CHRWAYPOINTS; ++i) {
++        waypoint *point = chr->act_gopos.waypoints[i];
++        int added = snprintf(path + used, sizeof(path) - used,
++                             "%s%d", i ? "," : "", point ? point->padID : -1);
++        if (added < 0 || added >= (int)sizeof(path) - used) break;
++        used += added;
++    }
++    sysLogPrintf(LOG_NOTE,
++        "sim nav trace: poll=%u route=%s start=(%.0f %.0f %.0f) target=(%.0f %.0f %.0f) pads=%s",
++        polls, reason, chr->prop->pos.x, chr->prop->pos.y, chr->prop->pos.z,
++        chr->act_gopos.targetpos.x, chr->act_gopos.targetpos.y,
++        chr->act_gopos.targetpos.z, path);
++}
++
++static void simProbeTraceMovement(ChrRecord *chr, unsigned polls,
++                                   const SimProbeRoute *route, int force)
++{
++    int index = -1, padid = -1, mode = -1;
++    float dx = 0.0f, dz = 0.0f, done = 0.0f, total = 0.0f;
++    if (!simProbeNavTraceEnabled() || (!force && polls % 30 != 0) ||
++        !chr->prop) return;
++    if (chr->actiontype == ACT_GOPOS) {
++        coord3d *next = &chr->act_gopos.targetpos;
++        index = chr->act_gopos.curindex;
++        if (index >= 0 && index < MAX_CHRWAYPOINTS &&
++            chr->act_gopos.waypoints[index]) {
++            padid = chr->act_gopos.waypoints[index]->padID;
++            next = &g_CurrentSetup.pads[padid].pos;
++        }
++        dx = next->x - chr->prop->pos.x;
++        dz = next->z - chr->prop->pos.z;
++        mode = chr->act_gopos.waydata.mode;
++        done = chr->act_gopos.waydata.segdistdone;
++        total = chr->act_gopos.waydata.segdisttotal;
++    }
++    sysLogPrintf(LOG_NOTE,
++        "sim nav trace: poll=%u goal=%d player=%d action=%d pos=(%.0f %.0f %.0f) index=%d pad=%d nextdist=%.0f mode=%d seg=%.0f/%.0f lastmove=%d",
++        polls, route->goalKind, route->targetPlayer, chr->actiontype,
++        chr->prop->pos.x, chr->prop->pos.y, chr->prop->pos.z,
++        index, padid, sqrtf(dx*dx + dz*dz), mode, done, total,
++        g_GlobalTimer - chr->lastmoveok60);
++}
++
++void simulantProbeTraceDoor(ChrRecord *chr, PropRecord *door)
++{
++    if (!simProbeNavTraceEnabled() || !chr || chr->chrnum != SIM_PROBE_CHRNUM ||
++        !chr->prop || !door) return;
++    sysLogPrintf(LOG_NOTE,
++        "sim nav trace: poll=%u door=(%.0f %.0f %.0f) actor=(%.0f %.0f %.0f) index=%d",
++        s_probe.polls, door->pos.x, door->pos.y, door->pos.z,
++        chr->prop->pos.x, chr->prop->pos.y, chr->prop->pos.z,
++        chr->actiontype == ACT_GOPOS ? chr->act_gopos.curindex : -1);
++}
+ 
+ int simulantProbeGeneratedRequested(void)
+ {
+@@ -578,6 +650,30 @@
+                  stage, pads, extra, n, s_generatedGraph.edge_count,
+                  s_generatedGraph.component_count, s_generatedGraph.largest_component,
+                  s_generatedGraph.isolated_nodes, s_generatedGraph.max_route_hops);
++    if (simProbeNavTraceEnabled()) {
++        int bridges = 0;
++        int *cuts = malloc((size_t)n * sizeof(*cuts));
++        if (cuts) {
++            int cutCount = mpNavGraphBottlenecks(&s_generatedGraph, cuts, n,
++                                                 &bridges);
++            sysLogPrintf(LOG_NOTE, "sim nav trace: cutnodes=%d bridgeedges=%d",
++                         cutCount, bridges);
++            for (int k = 0; k < cutCount; ++k) {
++                for (int node = 0; node < n; ++node) {
++                    if (s_generatedGraph.nodes[node].pad_id != cuts[k]) continue;
++                    sysLogPrintf(LOG_NOTE,
++                        "sim nav trace: cut pad=%d source=%s component=%d pos=(%.0f %.0f %.0f)",
++                        cuts[k], cuts[k] > pads ? "stan" : "setup",
++                        s_generatedGraph.component[node],
++                        s_generatedGraph.nodes[node].x,
++                        s_generatedGraph.nodes[node].y,
++                        s_generatedGraph.nodes[node].z);
++                    break;
++                }
++            }
++            free(cuts);
++        }
++    }
+     if (n < 2 || s_generatedGraph.largest_component < 2) goto failed;
+     s_generatedWaypoints = calloc((size_t)n + 1, sizeof(*s_generatedWaypoints));
+     s_generatedGroups = calloc(2, sizeof(*s_generatedGroups));
+@@ -830,6 +926,8 @@
+             dx * dx + dz * dz > 180.0f * 180.0f) {
+             sysLogPrintf(LOG_NOTE, "sim probe: stalled en route to weapon at pad %d",
+                          nearest->weapon->pad);
++            simProbeTraceMovement(chr, polls, route, 1);
++            simProbeTraceRoute(chr, polls, "stalled-weapon");
+             route->blockedWeapon = nearest;
+             route->weaponBlockedUntil = polls + 360;
+             route->weaponTarget = NULL;
+@@ -850,6 +948,7 @@
+         int ok = chrGoToPad(chr, pad, SPEED_SPRINT);
+         sysLogPrintf(LOG_NOTE, "sim probe: route to weapon item %d at pad %d: %s",
+                      nearest->weapon->weaponnum, pad, ok ? "running" : "unreachable");
++        if (ok) simProbeTraceRoute(chr, polls, "weapon");
+         route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+         if (ok) {
+             route->weaponTarget = nearest;
+@@ -1088,6 +1187,7 @@
+         int ok = chrGoToPad(chr, pad, SPEED_SPRINT);
+         sysLogPrintf(LOG_NOTE, "sim probe: route to armour at pad %d: %s",
+                      pad, ok ? "running" : "unreachable");
++        if (ok) simProbeTraceRoute(chr, polls, "armour");
+         route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+         if (ok) {
+             route->armourTarget = nearest;
+@@ -1173,6 +1273,7 @@
+         int ok = chrGoToPad(chr, pad, SPEED_SPRINT);
+         sysLogPrintf(LOG_NOTE, "sim probe: route to ammo at pad %d: %s",
+                      pad, ok ? "running" : "unreachable");
++        if (ok) simProbeTraceRoute(chr, polls, "ammo");
+         route->retryAfter = polls + SIM_ROUTE_REPLAN_POLLS;
+         if (ok) {
+             route->ammoTarget = nearest;
+@@ -1451,6 +1552,7 @@
+         route->combatSide ^= mode == MP_SIM_COMBAT_ORBIT;
+         sysLogPrintf(LOG_NOTE, "sim probe: combat mode %d to pad %d",
+                      mode, s_navWaypoints[bestGoal].padID);
++        simProbeTraceRoute(chr, polls, "combat");
+         return 1;
+     }
+     if (bestGoal >= 0) {
+@@ -1518,6 +1620,8 @@
+                 ++route->stalls;
+                 sysLogPrintf(LOG_NOTE, "sim probe: stalled on waypoint %d (%d); replanning",
+                              route->goal, route->stalls);
++                simProbeTraceMovement(chr, polls, route, 1);
++                simProbeTraceRoute(chr, polls, "stalled-pursuit");
+                 if (route->stalls >= 2) {
+                     route->blockedGoal = route->goal;
+                     route->blockedUntil = polls + 360;
+@@ -1599,6 +1703,7 @@
+         sysLogPrintf(LOG_NOTE, "sim probe: route to player %d via pad %d: %s",
+                      targetPlayer + 1, destination->padID,
+                      ok ? "running" : "unreachable");
++        if (ok) simProbeTraceRoute(chr, polls, "pursuit");
+         if (ok) {
+             route->goal = goal;
+             route->pursuitPlayer = targetPlayer;
+@@ -1682,6 +1787,7 @@
+                 }
+             }
+             if (navReady && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
++                simProbeTraceMovement(chr, probe->polls, route, 0);
+                 simProbeContinueRoute(chr);
+                 SimProbePickupChoice pickup = simProbeChoosePickup(chr, route, probe->polls);
+                 simProbeRemoteDetonate(chr, route);
+--- a/src/game/simulant_probe.h
++++ b/src/game/simulant_probe.h
+@@ -4,6 +4,7 @@
+ #define GE_SIMULANT_PROBE_H
+ 
+ struct PropRecord;
++struct ChrRecord;
+ struct waypoint;
+ struct PropRecord *simulantProbeGetProp(void);
+ int simulantProbeGeneratedRequested(void);
+@@ -18,5 +19,7 @@
+ void simulantProbeStageReady(int stage);
+ /* Called after stage guard/object cleanup, before MEMPOOL_STAGE is reused. */
+ void simulantProbeStageTeardown(void);
++/* Optional GETV_SIM_NAV_TRACE=1 report from the native door traversal. */
++void simulantProbeTraceDoor(struct ChrRecord *chr, struct PropRecord *door);
+ 
+ #endif

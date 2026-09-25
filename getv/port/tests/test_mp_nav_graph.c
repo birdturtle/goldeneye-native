@@ -32,6 +32,14 @@ static int chain(const MpNavAnchor *a, const MpNavAnchor *b, void *unused)
     return a->pad_id - b->pad_id == 1 || b->pad_id - a->pad_id == 1;
 }
 
+static int ring(const MpNavAnchor *a, const MpNavAnchor *b, void *unused)
+{
+    (void)unused;
+    return a->pad_id - b->pad_id == 1 || b->pad_id - a->pad_id == 1 ||
+           (a->pad_id == 0 && b->pad_id == 3) ||
+           (a->pad_id == 3 && b->pad_id == 0);
+}
+
 static int detour_walk(const MpNavAnchor *a, const MpNavAnchor *b, void *unused)
 {
     int x = a->pad_id, y = b->pad_id;
@@ -140,6 +148,29 @@ int main(void)
         CHECK(mpNavGraphCostToPad(&graph, costs, 6) == 30.0f);
         CHECK(mpNavGraphCostToPad(&graph, costs, 2) >
               mpNavGraphCostToPad(&graph, costs, 6));
+        mpNavGraphClear(&graph);
+    }
+    {
+        MpNavAnchor bottleneck[] = {{0, 0, 0, 0, 1}, {1, 1, 0, 0, 1},
+                                    {2, 2, 0, 0, 1}, {3, 3, 0, 0, 1}};
+        int cutpads[4] = {-1, -1, -1, -1}, bridges = -1;
+        CHECK(mpNavGraphBuild(&graph, 50, bottleneck, 4, 3, chain, NULL));
+        CHECK(mpNavGraphBottlenecks(&graph, cutpads, 4, &bridges) == 2);
+        CHECK(cutpads[0] == 1 && cutpads[1] == 2 && bridges == 3);
+        mpNavGraphClear(&graph);
+        {
+            MpNavAnchor disconnected[] = {{0, 0, 0, 0, 1}, {1, 1, 0, 0, 1},
+                                          {2, 2, 0, 0, 1}, {3, 3, 0, 0, 1},
+                                          {10, 10, 0, 0, 1}, {11, 11, 0, 0, 1}};
+            CHECK(mpNavGraphBuild(&graph, 50, disconnected, 6, 5, chain, NULL));
+            CHECK(graph.component_count == 2);
+            CHECK(mpNavGraphBottlenecks(&graph, cutpads, 4, &bridges) == 2 &&
+                  cutpads[0] == 1 && cutpads[1] == 2 && bridges == 4);
+            mpNavGraphClear(&graph);
+        }
+        CHECK(mpNavGraphBuild(&graph, 50, bottleneck, 4, 3, ring, NULL));
+        CHECK(mpNavGraphBottlenecks(&graph, cutpads, 4, &bridges) == 0 &&
+              bridges == 0);
         mpNavGraphClear(&graph);
     }
     {

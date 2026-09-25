@@ -199,6 +199,67 @@ float mpNavGraphCostToPad(const MpNavGraph *graph, const float *costs,
     return index >= 0 ? costs[index] : -1.0f;
 }
 
+typedef struct MpNavCutSearch {
+    const MpNavGraph *graph;
+    int *discovered, *low, *parent;
+    unsigned char *cut;
+    int clock, bridges;
+} MpNavCutSearch;
+
+static void mpNavFindCuts(MpNavCutSearch *search, int u)
+{
+    int children = 0, n = search->graph->node_count;
+    search->discovered[u] = search->low[u] = ++search->clock;
+    for (int v = 0; v < n; ++v) {
+        if (!search->graph->edges[(size_t)u * n + v]) continue;
+        if (!search->discovered[v]) {
+            search->parent[v] = u;
+            ++children;
+            mpNavFindCuts(search, v);
+            if (search->low[v] < search->low[u]) search->low[u] = search->low[v];
+            if (search->parent[u] >= 0 &&
+                search->low[v] >= search->discovered[u]) search->cut[u] = 1;
+            if (search->low[v] > search->discovered[u]) ++search->bridges;
+        } else if (v != search->parent[u] &&
+                   search->discovered[v] < search->low[u]) {
+            search->low[u] = search->discovered[v];
+        }
+    }
+    if (search->parent[u] < 0 && children > 1) search->cut[u] = 1;
+}
+
+int mpNavGraphBottlenecks(const MpNavGraph *graph, int *pad_ids, int capacity,
+                          int *bridge_count)
+{
+    MpNavCutSearch search = {0};
+    int count = 0, n;
+    if (!graph || !graph->nodes || !graph->edges || !bridge_count ||
+        capacity < 0 || (capacity && !pad_ids)) return -1;
+    n = graph->node_count;
+    search.graph = graph;
+    search.discovered = calloc((size_t)n, sizeof(int));
+    search.low = calloc((size_t)n, sizeof(int));
+    search.parent = malloc((size_t)n * sizeof(int));
+    search.cut = calloc((size_t)n, 1);
+    if (!search.discovered || !search.low || !search.parent || !search.cut) {
+        free(search.discovered); free(search.low);
+        free(search.parent); free(search.cut);
+        return -1;
+    }
+    for (int i = 0; i < n; ++i) search.parent[i] = -1;
+    for (int i = 0; i < n; ++i)
+        if (!search.discovered[i]) mpNavFindCuts(&search, i);
+    for (int i = 0; i < n; ++i)
+        if (search.cut[i]) {
+            if (count < capacity) pad_ids[count] = graph->nodes[i].pad_id;
+            ++count;
+        }
+    *bridge_count = search.bridges;
+    free(search.discovered); free(search.low);
+    free(search.parent); free(search.cut);
+    return count;
+}
+
 int mpNavGraphRoute(const MpNavGraph *graph, int from_pad, int to_pad,
                     int *pad_ids, int capacity)
 {
