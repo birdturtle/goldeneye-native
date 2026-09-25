@@ -38,6 +38,13 @@ retains its current reachable pursuit target between route polls and switches
 only when another player offers a substantially cheaper route. These paths
 still require a Temple match playtest for door handling and actor clearance.
 
+For a short route diagnostic run, set `GETV_SIM_NAV_TRACE=1` alongside
+`GETV_SIM_NAV=generated`. The `sim nav trace:` lines name route pad prefixes,
+the actor's current pad and movement mode, door activations, and graph cut
+points. A route reported as running has only been accepted by the actor's
+movement code; repeated `nextdist` with little position change identifies the
+specific segment that needs repair. The trace is off during normal play.
+
 Route decisions now measure path length on the active waypoint graph, with
 unreachable destinations removed from pickup, chase, maneuver and mine retreat
 choices. The graph is built once per stage and the Simulant's distance map is

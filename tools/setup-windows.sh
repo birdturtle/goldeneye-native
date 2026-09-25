@@ -180,7 +180,8 @@ for p in 0001-source 0006-fov-live-setter 0007-load-trace \
          0045-simulant-projectiles 0046-simulant-knife-hitparts 0047-simulant-goals-ammo \
          0048-simulant-projectile-contact 0049-simulant-combat-movement \
          0050-simulant-route-decisions 0051-simulant-route-continuation \
-         0052-simulant-combat-sight 0053-simulant-temple-stan-routes; do
+         0052-simulant-combat-sight 0053-simulant-temple-stan-routes \
+         0054-simulant-route-diagnostics; do
   if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/$p.patch" ) 2>/dev/null; then
     echo "$p.patch: already applied"
   else

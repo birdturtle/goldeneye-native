@@ -105,6 +105,7 @@ else
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0051-simulant-route-continuation.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0052-simulant-combat-sight.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0053-simulant-temple-stan-routes.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0054-simulant-route-diagnostics.patch" )
     echo "cloned and patched"
 fi
 

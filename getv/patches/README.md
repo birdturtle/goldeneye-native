@@ -167,6 +167,13 @@ route polls and favours the current visible combat target until a substantially
 closer one appears. The stage log reports the added floor nodes and graph
 connectivity. Other generated-map adapters are unchanged.
 
+`0054-simulant-route-diagnostics.patch` adds opt-in `GETV_SIM_NAV_TRACE=1`
+messages for the Simulant's accepted waypoint prefix, position and native
+movement mode every 30 polls, stall snapshots, and door activations. The
+generated graph also identifies single-pad and single-edge bottlenecks so a
+failed Temple route can be matched to a real connector. No route behavior is
+changed by this diagnostic patch.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them
