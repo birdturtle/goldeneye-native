@@ -1,1 +1,30 @@
-../../../vendor/ge-decomp/include/platform_info.h
+#ifndef PLATFORM_INFO_H
+#define PLATFORM_INFO_H
+
+/* GE_PORT_NATIVE wins over TARGET_N64 when both are defined, which they are for every
+ * native port build (build_windows.ps1's game batch passes both). TARGET_N64 stays set on
+ * those builds for unrelated asset-format reasons, but this header cannot tell that apart
+ * from a real N64 target unless it checks for GE_PORT_NATIVE explicitly -- and the old
+ * unconditional check made IS_BIG_ENDIAN/IS_64_BIT wrong on every native build, always
+ * reporting the N64's own big-endian, 32-bit shape.
+ *
+ * That is not hypothetical: PR/gbi.h's Gfx union gates its bitfield struct views (Gdma,
+ * Gtri, Gsettile, ...) on `IS_BIG_ENDIAN && !IS_64_BIT`, so those wrong values were exposing
+ * struct layouts that assume big-endian bit order and 4-byte pointers -- wrong twice over on
+ * a little-endian, 8-byte-pointer host. lightfixture.c and unk_092E50.c both document this
+ * trap and route around it by reading raw words and shifting instead of using the views; no
+ * code anywhere in this tree actually dereferences the affected union members (verified by
+ * grepping every member name gbi.h declares there), so correcting the values here changes
+ * nothing for code that already works and removes the trap for anything written next. */
+#if defined(TARGET_N64) && !defined(GE_PORT_NATIVE)
+#define IS_64_BIT 0
+#define IS_BIG_ENDIAN 1
+#else
+#include <stdint.h>
+#define IS_64_BIT (UINTPTR_MAX == 0xFFFFFFFFFFFFFFFFU)
+#define IS_BIG_ENDIAN (__BYTE_ORDER__ == __ORDER_BIG_ENDIAN__)
+#endif
+
+#define DOUBLE_SIZE_ON_64_BIT(size) ((size) * (sizeof(void *) / 4))
+
+#endif /* PLATFORM_INFO_H */

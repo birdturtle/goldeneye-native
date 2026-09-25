@@ -12,6 +12,11 @@ typedef struct MpNavCandidate {
     int pad_id;
 } MpNavCandidate;
 
+typedef struct MpNavBridge {
+    int from, to;
+    double distance;
+} MpNavBridge;
+
 static int mpNavSortAnchors(const void *left, const void *right)
 {
     const MpNavAnchor *a = left, *b = right;
@@ -24,6 +29,100 @@ static int mpNavSortCandidates(const void *left, const void *right)
     if (a->distance < b->distance) return -1;
     if (a->distance > b->distance) return 1;
     return (a->pad_id > b->pad_id) - (a->pad_id < b->pad_id);
+}
+
+static int mpNavSortBridges(const void *left, const void *right)
+{
+    const MpNavBridge *a = left, *b = right;
+    if (a->distance < b->distance) return -1;
+    if (a->distance > b->distance) return 1;
+    if (a->from != b->from) return (a->from > b->from) - (a->from < b->from);
+    return (a->to > b->to) - (a->to < b->to);
+}
+
+static void mpNavMeasureComponents(MpNavGraph *graph, int *queue)
+{
+    int n = graph->node_count;
+    graph->component_count = graph->largest_component = 0;
+    graph->isolated_nodes = graph->max_neighbours = 0;
+    for (int i = 0; i < n; ++i) {
+        int degree = 0;
+        graph->component[i] = -1;
+        for (int j = 0; j < n; ++j)
+            degree += graph->edges[(size_t)i * n + j] != 0;
+        if (!degree) graph->isolated_nodes++;
+        if (degree > graph->max_neighbours) graph->max_neighbours = degree;
+    }
+    for (int i = 0; i < n; ++i) {
+        int head = 0, tail = 0;
+        if (graph->component[i] != -1) continue;
+        graph->component[i] = graph->component_count;
+        queue[tail++] = i;
+        while (head < tail) {
+            int current = queue[head++];
+            for (int j = 0; j < n; ++j) {
+                if (graph->edges[(size_t)current * n + j] &&
+                    graph->component[j] == -1) {
+                    graph->component[j] = graph->component_count;
+                    queue[tail++] = j;
+                }
+            }
+        }
+        if (tail > graph->largest_component) graph->largest_component = tail;
+        graph->component_count++;
+    }
+}
+
+/* PD's authored waypoint graph has links between room clusters. A nearest-pad
+ * budget has no such guarantee: on a dense map all 24 candidates can lie on
+ * the same side of a doorway. After the local pass, search for a bounded set
+ * of inter-component links and admit only segments the stage walker accepts
+ * in both directions. This never invents a link through a wall. */
+static void mpNavBridgeComponents(MpNavGraph *graph, MpNavCandidate *candidates,
+                                  MpNavDirectWalk direct_walk, void *context)
+{
+    int n = graph->node_count, count = 0, attempts = 0;
+    int per_node = n - 1 < 32 ? n - 1 : 32;
+    MpNavBridge *bridges;
+    if (graph->component_count <= 1 || per_node <= 0 ||
+        (size_t)n > SIZE_MAX / (size_t)per_node / sizeof(*bridges)) return;
+    bridges = malloc((size_t)n * per_node * sizeof(*bridges));
+    if (!bridges) return;
+    for (int i = 0; i < n; ++i) {
+        int choices = 0, written = 0;
+        for (int j = i + 1; j < n; ++j) {
+            double dx, dy, dz;
+            if (graph->component[i] == graph->component[j]) continue;
+            dx = (double)graph->nodes[j].x - graph->nodes[i].x;
+            dy = (double)graph->nodes[j].y - graph->nodes[i].y;
+            dz = (double)graph->nodes[j].z - graph->nodes[i].z;
+            candidates[choices++] = (MpNavCandidate){j, dx*dx + dy*dy + dz*dz,
+                                                       graph->nodes[j].pad_id};
+        }
+        qsort(candidates, (size_t)choices, sizeof(*candidates), mpNavSortCandidates);
+        while (written < choices && written < per_node) {
+            bridges[count++] = (MpNavBridge){i, candidates[written].index,
+                                              candidates[written].distance};
+            written++;
+        }
+    }
+    qsort(bridges, (size_t)count, sizeof(*bridges), mpNavSortBridges);
+    for (int k = 0; k < count && attempts < 256 && graph->component_count > 1; ++k) {
+        int i = bridges[k].from, j = bridges[k].to;
+        int old, replacement;
+        if (graph->component[i] == graph->component[j]) continue;
+        attempts++;
+        if (!direct_walk(&graph->nodes[i], &graph->nodes[j], context) ||
+            !direct_walk(&graph->nodes[j], &graph->nodes[i], context)) continue;
+        graph->edges[(size_t)i * n + j] = graph->edges[(size_t)j * n + i] = 1;
+        graph->edge_count++;
+        old = graph->component[j];
+        replacement = graph->component[i];
+        for (int m = 0; m < n; ++m)
+            if (graph->component[m] == old) graph->component[m] = replacement;
+        graph->component_count--;
+    }
+    free(bridges);
 }
 
 void mpNavGraphClear(MpNavGraph *graph)
@@ -201,30 +300,9 @@ int mpNavGraphBuild(MpNavGraph *graph, int stage, const MpNavAnchor *pads,
         }
     }
 
-    for (i = 0; i < n; i++) {
-        int degree = 0;
-        next.component[i] = -1;
-        for (j = 0; j < n; j++) degree += next.edges[(size_t)i * n + j] != 0;
-        if (!degree) next.isolated_nodes++;
-        if (degree > next.max_neighbours) next.max_neighbours = degree;
-    }
-    for (i = 0; i < n; i++) {
-        int head = 0, tail = 0;
-        if (next.component[i] != -1) continue;
-        next.component[i] = next.component_count;
-        queue[tail++] = i;
-        while (head < tail) {
-            int current = queue[head++];
-            for (j = 0; j < n; j++) {
-                if (next.edges[(size_t)current * n + j] && next.component[j] == -1) {
-                    next.component[j] = next.component_count;
-                    queue[tail++] = j;
-                }
-            }
-        }
-        if (tail > next.largest_component) next.largest_component = tail;
-        next.component_count++;
-    }
+    mpNavMeasureComponents(&next, queue);
+    mpNavBridgeComponents(&next, candidates, direct_walk, context);
+    mpNavMeasureComponents(&next, queue);
     /* Graph diameter is diagnostic. The actor's native six-waypoint route
      * buffer must never be confused with this total path length. */
     next.max_route_hops = n > 256 ? -1 : 0;

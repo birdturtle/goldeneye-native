@@ -43,6 +43,15 @@ static int detour_walk(const MpNavAnchor *a, const MpNavAnchor *b, void *unused)
            (x == 5 && y == 2) || (x == 2 && y == 5);
 }
 
+static int doorway_walk(const MpNavAnchor *a, const MpNavAnchor *b, void *unused)
+{
+    int x = a->pad_id, y = b->pad_id;
+    (void)unused;
+    return (x == 0 && y == 1) || (x == 1 && y == 0) ||
+           (x == 2 && y == 3) || (x == 3 && y == 2) ||
+           (x == 1 && y == 2) || (x == 2 && y == 1);
+}
+
 int main(void)
 {
     MpNavGraph graph = {0}, reordered = {0};
@@ -93,6 +102,18 @@ int main(void)
     CHECK(!mpNavGraphReachable(&graph, 10, 30));
     CHECK(graph.node_count == 0);
     mpNavGraphClear(&reordered);
+    {
+        /* The nearest-pad pass sees only same-room neighbours. PD's
+         * authored route has the doorway link; the generated adapter must
+         * discover a validated cross-component link as well. */
+        MpNavAnchor rooms[] = {{0, 0, 0, 0, 1}, {1, 1, 0, 0, 1},
+                               {2, 8, 0, 0, 1}, {3, 9, 0, 0, 1}};
+        CHECK(mpNavGraphBuild(&graph, 49, rooms, 4, 1, doorway_walk, NULL));
+        CHECK(graph.component_count == 1 && graph.edge_count == 3);
+        CHECK(mpNavGraphRoute(&graph, 0, 3, route, 6) == 4);
+        CHECK(route[0] == 0 && route[1] == 1 && route[2] == 2 && route[3] == 3);
+        mpNavGraphClear(&graph);
+    }
     {
         /* The nearest-looking pad is behind a wall; the graph route runs
          * around its far side, so the genuinely cheap pickup should win. */

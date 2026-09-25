@@ -1,0 +1,44 @@
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -1488,6 +1488,33 @@
+     }
+ }
+ 
++/* PD replans a bounded waypoint prefix once it is consumed. GE's native
++ * action otherwise treats the NULL after our fifth waypoint as permission to
++ * walk directly to the final target, often through a wall or closed door.
++ * Refresh before that final waypoint is consumed, for every goal type. */
++static void simProbeContinueRoute(ChrRecord *chr)
++{
++    waypoint *last, *destination;
++    coord3d target;
++    StandTile *stan;
++    float dx, dz;
++    if (chr->actiontype != ACT_GOPOS || !simulantProbeNavActive() ||
++        chr->act_gopos.curindex < 4) return;
++    last = chr->act_gopos.waypoints[4];
++    if (!last || chr->act_gopos.waypoints[5]) return;
++    dx = chr->prop->pos.x - g_CurrentSetup.pads[last->padID].pos.x;
++    dz = chr->prop->pos.z - g_CurrentSetup.pads[last->padID].pos.z;
++    if (chr->act_gopos.curindex == 4 && dx * dx + dz * dz > 100.0f * 100.0f)
++        return;
++    target = chr->act_gopos.targetpos;
++    stan = chr->act_gopos.target;
++    if (!stan) return;
++    destination = chrlvStanPathRelated(&target, stan);
++    if (!destination || destination == last) return;
++    if (plot_course_for_actor(chr, &target, stan, chr->act_gopos.unk59))
++        sysLogPrintf(LOG_NOTE, "sim nav: continued route after pad %d", last->padID);
++}
++
+ void simulantProbePoll(void)
+ {
+     SimProbeRuntime *probe = &s_probe;
+@@ -1535,6 +1562,7 @@
+                 }
+             }
+             if (navReady && chr->actiontype != ACT_DIE && chr->actiontype != ACT_DEAD) {
++                simProbeContinueRoute(chr);
+                 SimProbePickupChoice pickup = simProbeChoosePickup(chr, route, probe->polls);
+                 simProbeRemoteDetonate(chr, route);
+                 if (simProbeRetreatFromMine(chr, probe->polls, route)) return;
