@@ -92,6 +92,20 @@ resource name to its actual `bg_ame_all_p_seg` blob. Upstream points that name a
 the empty `bg_imp_all_p_seg` cut-level placeholder. The generated asset check
 also verifies every nonempty map's resource name resolves to its own blob.
 
+`0042-simulant-weapon-policy.patch` connects the Simulant's first weapon policy
+to pickup and engagement. It considers the selected multiplayer set, weapon
+strength, travel distance, firing cadence and useful range. Melee, explosives,
+mines and lasers are classified but cannot be selected until their combat
+execution is implemented; the policy lives in `getv/port/src`, with ROM-free
+tests in `getv/port/tests`.
+
+`0043-simulant-melee-combat.patch` lets an unarmed Simulant slap at close range
+and an armed one use slappers only when an opponent is extremely close. Both
+require clear sight, similar elevation and facing before using the existing
+bot-to-human multiplayer damage and scoring bridge. It plays a brief native
+character hand animation and positional punch sound. No projectile path is
+enabled by this patch.
+
 ## The gap at 0003, 0004 and 0005 is deliberate
 
 They were folded into `0001` the last time it was refreshed, and nobody retired them

@@ -1,0 +1,131 @@
+diff --git a/src/game/mp_sim_policy.h b/src/game/mp_sim_policy.h
+--- a/src/game/mp_sim_policy.h
++++ b/src/game/mp_sim_policy.h
+@@ -30,5 +30,9 @@
+ /* Higher values are better. Zero means the current combat executor cannot use
+  * the item, even if it exists in the selected multiplayer weapon set. */
+ float mpSimPickupScore(MpSimWeaponKind kind, float distance);
++/* The unarmed Simulant fights when cornered; an armed one may slap only at
++ * extreme close range. Vertical separation must never produce a melee hit. */
++int mpSimShouldSlap(float horizontal_distance, float vertical_distance,
++                    int has_firearm);
+ 
+ #endif
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -40,6 +40,7 @@
+                                    AIListRecord *ailist, s32 flags);
+ extern waypoint *chrlvStanPathRelated(coord3d *pos, StandTile *stan);
+ extern PropRecord *chrGiveWeapon(ChrRecord *chr, s32 model, ITEM_IDS item, s32 flags);
++extern void chrlvIdleAnimationRelated(ChrRecord *chr, f32 duration);
+ 
+ /* This ID is outside the normal stage guard numbering (which starts at 5000).
+  * The slot is checked against the current stage's array before each use. */
+@@ -66,6 +67,7 @@
+     unsigned nextShot;
+     unsigned flashUntil;
+     unsigned recoilUntil;
++    unsigned meleeAnimUntil;
+ } SimProbeRoute;
+ 
+ typedef struct SimProbeRuntime {
+@@ -570,23 +572,27 @@
+     return 1;
+ }
+ 
+-/* A deliberately modest first engagement: no projectile or explosion paths,
+- * and a wall/closed door blocks both target acquisition and damage.
+- * Stop pursuit only at close range; at longer ranges the route remains active
+- * and firing is possible when the actor naturally faces the target. */
++/* A wall/closed door blocks both target acquisition and damage. Character
++ * melee uses the same human MP health bridge as the firearm executor; thrown
++ * weapons still need separate projectile ownership before they can be used. */
+ static int simProbeCombat(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
+ {
+     PropRecord *gun = chrGetEquippedWeaponProp(chr, GUNRIGHT);
+     float nearest = SIM_FIRE_RANGE * SIM_FIRE_RANGE;
+     int victim = -1;
+-    if (!gun || !gun->weapon || !chr->model || !chr->prop || !chr->prop->stan ||
++    if (!chr->model || !chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return 0;
+-    int item = gun->weapon->weaponnum;
++    int item = gun && gun->weapon ? gun->weapon->weaponnum : ITEM_FIST;
+     const MpSimWeaponPolicy *policy = mpSimWeaponPolicy(simProbeWeaponKind(item));
+-    if (!policy->firearm_ready) {
++    if (gun && !policy->firearm_ready) {
+         if (route->flashUntil) chrSetFiring(chr, GUNRIGHT, 0);
+         route->flashUntil = route->recoilUntil = 0;
+         return 0;
++    }
++
++    if (route->meleeAnimUntil && polls >= route->meleeAnimUntil) {
++        if (chr->actiontype == ACT_STAND) chrlvIdleAnimationRelated(chr, 8.0f);
++        route->meleeAnimUntil = 0;
+     }
+ 
+     /* The old one-poll pulse was too brief to reliably appear in either
+@@ -628,6 +634,9 @@
+     const struct player *target = g_playerPointers[victim];
+     float dx = target->prop->pos.x - chr->prop->pos.x;
+     float dz = target->prop->pos.z - chr->prop->pos.z;
++    float levelDiff = target->prop->pos.y - chr->prop->pos.y;
++    int slap = mpSimShouldSlap(sqrtf(dx * dx + dz * dz), levelDiff,
++                               gun && policy->firearm_ready);
+     float dy = target->prop->pos.y - (chr->prop->pos.y + 30.0f);
+     float elevation = atan2f(dy, sqrtf(dx * dx + dz * dz));
+     if (elevation > 0.45f) elevation = 0.45f;
+@@ -635,7 +644,8 @@
+     /* Let the game's standing turn state own the body heading. Directly
+      * writing setsubroty here competed with animation/route rotation and
+      * made the character spin continuously. */
+-    int closeEngagement = nearest < policy->hold_range * policy->hold_range;
++    int closeEngagement = slap ||
++        nearest < policy->hold_range * policy->hold_range;
+     float desired = atan2f(dx, dz);
+     if (desired < 0.0f) desired += M_TAU_F;
+     if (closeEngagement) {
+@@ -647,14 +657,39 @@
+             chr->act_stand.face_entityid = facing;
+         }
+     }
++    if (!gun && !slap) return closeEngagement;
++
+     /* chrUpdateAimProperties interpolates this target into the right-arm
+      * rotation used by chrRender. */
+-    chr->aimendrshoulder = elevation +
+-                            (polls < route->recoilUntil ? 0.18f : 0.0f);
+-    chr->aimendcount = 6;
++    if (gun && !slap) {
++        chr->aimendrshoulder = elevation +
++                                (polls < route->recoilUntil ? 0.18f : 0.0f);
++        chr->aimendcount = 6;
++    }
+     float heading = getsubroty(chr->model);
+-    if (fabsf(atan2f(sinf(desired - heading), cosf(desired - heading))) > 0.12f ||
++    if (fabsf(atan2f(sinf(desired - heading), cosf(desired - heading))) >
++            (slap ? 0.35f : 0.12f) ||
+         polls < route->nextShot) return closeEngagement;
++
++    if (slap) {
++        const MpSimWeaponPolicy *melee = mpSimWeaponPolicy(MP_SIM_UNARMED);
++        route->nextShot = polls + melee->shot_interval;
++        route->meleeAnimUntil = polls + 26;
++        /* The guard's extended-hand animation keeps the third-person strike
++         * visible without giving the actor a controller/player action slot. */
++        modelSetAnimation(chr->model,
++            (ModelAnimation *)GE_ANIM_AT(GE_ANIMOFF_ANIM_DATA_extending_left_hand),
++            (polls / melee->shot_interval) & 1, 40.0f, 1.0f, 8.0f);
++        modelSetAnimEndFrame(chr->model, 66.0f);
++        ALSoundState *punch = sndPlaySfx((struct ALBankAlt_s *)g_musicSfxBufferPtr,
++                                         PUNCH1_SFX, NULL);
++        if (punch) chrobjSndCreatePostEventDefault(punch, &chr->prop->pos);
++        mpCombatDamageHuman(mpRosterSlotForChr(chr->chrnum), victim,
++                            0.125f * gunItemGetDestructionAmount(ITEM_FIST),
++                            dx / sqrtf(dx * dx + dz * dz + 1.0f),
++                            dz / sqrtf(dx * dx + dz * dz + 1.0f));
++        return 1;
++    }
+ 
+     route->nextShot = polls + policy->shot_interval;
+     route->flashUntil = polls + SIM_FLASH_POLLS;

@@ -93,6 +93,8 @@ else
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0039-simulant-native-facing.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0040-background-asset-guard.patch" )
     ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0041-background-resource-registration.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0042-simulant-weapon-policy.patch" )
+    ( cd vendor/ge-decomp && git apply "$ROOT/getv/patches/0043-simulant-melee-combat.patch" )
     echo "cloned and patched"
 fi
 

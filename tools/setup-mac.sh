@@ -307,6 +307,18 @@ else
   ( cd "$DECOMP" && git apply "$HERE/getv/patches/0041-background-resource-registration.patch" ) \
     || die "0041-background-resource-registration.patch failed to apply"
 fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0042-simulant-weapon-policy.patch" ) 2>/dev/null; then
+  echo "0042-simulant-weapon-policy.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0042-simulant-weapon-policy.patch" ) \
+    || die "0042-simulant-weapon-policy.patch failed to apply"
+fi
+if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/0043-simulant-melee-combat.patch" ) 2>/dev/null; then
+  echo "0043-simulant-melee-combat.patch: already applied"
+else
+  ( cd "$DECOMP" && git apply "$HERE/getv/patches/0043-simulant-melee-combat.patch" ) \
+    || die "0043-simulant-melee-combat.patch failed to apply"
+fi
 
 # The ROM's SHA-1, from whichever tool this machine actually has.
 #

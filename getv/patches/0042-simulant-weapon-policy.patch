@@ -1,0 +1,162 @@
+diff --git a/src/game/mp_sim_policy.h b/src/game/mp_sim_policy.h
+new file mode 100644
+--- /dev/null
++++ b/src/game/mp_sim_policy.h
+@@ -0,0 +1,34 @@
++#ifndef GE_MP_SIM_POLICY_H
++#define GE_MP_SIM_POLICY_H
++
++/* Simulant decisions are independent of map navigation and character actions.
++ * Keep this declaration in sync with the game-side copy in patch 0042. */
++typedef enum MpSimWeaponKind {
++    MP_SIM_UNARMED,
++    MP_SIM_PISTOL,
++    MP_SIM_AUTOMATIC,
++    MP_SIM_SHOTGUN,
++    MP_SIM_RIFLE,
++    MP_SIM_SNIPER,
++    MP_SIM_MAGNUM,
++    MP_SIM_LASER,
++    MP_SIM_KNIFE,
++    MP_SIM_GRENADE,
++    MP_SIM_MINE,
++    MP_SIM_LAUNCHER,
++    MP_SIM_WEAPON_KINDS
++} MpSimWeaponKind;
++
++typedef struct MpSimWeaponPolicy {
++    int pickup_value;
++    float hold_range;
++    unsigned shot_interval;
++    int firearm_ready;
++} MpSimWeaponPolicy;
++
++const MpSimWeaponPolicy *mpSimWeaponPolicy(MpSimWeaponKind kind);
++/* Higher values are better. Zero means the current combat executor cannot use
++ * the item, even if it exists in the selected multiplayer weapon set. */
++float mpSimPickupScore(MpSimWeaponKind kind, float distance);
++
++#endif
+diff --git a/src/game/simulant_probe.c b/src/game/simulant_probe.c
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -13,6 +13,7 @@
+ #include "mp_simulants.h"
+ #include "mp_combat.h"
+ #include "mp_nav_graph.h"
++#include "mp_sim_policy.h"
+ #include "player.h"
+ #include "chrobjdata.h"
+ #include "chr.h"
+@@ -45,9 +46,7 @@
+ #define SIM_PROBE_CHRNUM 0x6fff
+ #define SIM_ROUTE_REPLAN_POLLS 90
+ #define SIM_ROUTE_STALL_POLLS 240
+-#define SIM_FIRE_INTERVAL_POLLS 24
+ #define SIM_FIRE_RANGE 1000.0f
+-#define SIM_ENGAGE_STOP_RANGE 250.0f
+ #define SIM_FLASH_POLLS 3
+ #define SIM_RECOIL_POLLS 5
+ 
+@@ -409,6 +408,30 @@
+     return 0;
+ }
+ 
++/* The policy is also used by pickup and combat. Unsupported weapons must
++ * never become a pickup goal until their action path is implemented. */
++static MpSimWeaponKind simProbeWeaponKind(int item)
++{
++    switch (item) {
++    case ITEM_WPPK: case ITEM_WPPKSIL: case ITEM_TT33:
++    case ITEM_SILVERWPPK: case ITEM_GOLDWPPK: case ITEM_GOLDENGUN:
++        return MP_SIM_PISTOL;
++    case ITEM_SKORPION: case ITEM_UZI: case ITEM_MP5K: case ITEM_MP5KSIL:
++    case ITEM_SPECTRE: case ITEM_FNP90: return MP_SIM_AUTOMATIC;
++    case ITEM_SHOTGUN: case ITEM_AUTOSHOT: return MP_SIM_SHOTGUN;
++    case ITEM_AK47: case ITEM_M16: return MP_SIM_RIFLE;
++    case ITEM_SNIPERRIFLE: return MP_SIM_SNIPER;
++    case ITEM_RUGER: return MP_SIM_MAGNUM;
++    case ITEM_LASER: return MP_SIM_LASER;
++    case ITEM_KNIFE: case ITEM_THROWKNIFE: return MP_SIM_KNIFE;
++    case ITEM_GRENADE: return MP_SIM_GRENADE;
++    case ITEM_TIMEDMINE: case ITEM_PROXIMITYMINE: case ITEM_REMOTEMINE:
++        return MP_SIM_MINE;
++    case ITEM_GRENADELAUNCH: case ITEM_ROCKETLAUNCH: return MP_SIM_LAUNCHER;
++    default: return MP_SIM_UNARMED;
++    }
++}
++
+ /* Only stage-owned, respawning firearms from the selected MP weapon set.
+  * Dropped items and special scenario objects need their own pickup rules. */
+ static int simProbeUsableWorldGun(PropRecord *prop)
+@@ -425,8 +448,7 @@
+         return 0;
+     weapon = prop->weapon;
+     if (weapon->prop != prop || !weapon->model ||
+-        weapon->weaponnum < ITEM_WPPK ||
+-        (weapon->weaponnum > ITEM_RUGER && weapon->weaponnum != ITEM_LASER))
++        !mpSimWeaponPolicy(simProbeWeaponKind(weapon->weaponnum))->firearm_ready)
+         return 0;
+     set = getPtrMPWeaponSetData();
+     for (int i = 0; i < 8; ++i) {
+@@ -443,7 +465,8 @@
+ {
+     PropRecord *nearest = NULL;
+     PropRecord *locked = NULL;
+-    float nearestDist = 1.0e30f;
++    float bestScore = 0.0f;
++    float lockedScore = 0.0f;
+     int seen = 0;
+     if (chrGetEquippedWeaponProp(chr, GUNRIGHT) ||
+         chrGetEquippedWeaponProp(chr, GUNLEFT)) {
+@@ -457,14 +480,17 @@
+         if (!simProbeUsableWorldGun(prop) ||
+             (prop == route->blockedWeapon && polls < route->weaponBlockedUntil))
+             continue;
+-        if (prop == route->weaponTarget) locked = prop;
++        MpSimWeaponKind kind = simProbeWeaponKind(prop->weapon->weaponnum);
+         float dx = prop->pos.x - chr->prop->pos.x;
+         float dy = prop->pos.y - chr->prop->pos.y;
+         float dz = prop->pos.z - chr->prop->pos.z;
+-        float dist = dx * dx + dz * dz + 16.0f * dy * dy;
+-        if (dist < nearestDist) { nearestDist = dist; nearest = prop; }
+-    }
+-    nearest = locked ? locked : nearest;
++        float distance = sqrtf(dx * dx + dz * dz + 16.0f * dy * dy);
++        float score = mpSimPickupScore(kind, distance);
++        if (prop == route->weaponTarget) { locked = prop; lockedScore = score; }
++        if (score > bestScore) { bestScore = score; nearest = prop; }
++    }
++    /* Avoid repeatedly reversing direction for marginal score changes. */
++    if (locked && lockedScore >= bestScore * 0.85f) nearest = locked;
+     if (!nearest) {
+         route->weaponTarget = NULL;
+         if (!route->noWeaponLogged) {
+@@ -556,7 +582,8 @@
+     if (!gun || !gun->weapon || !chr->model || !chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return 0;
+     int item = gun->weapon->weaponnum;
+-    if (item < ITEM_WPPK || item > ITEM_RUGER) {
++    const MpSimWeaponPolicy *policy = mpSimWeaponPolicy(simProbeWeaponKind(item));
++    if (!policy->firearm_ready) {
+         if (route->flashUntil) chrSetFiring(chr, GUNRIGHT, 0);
+         route->flashUntil = route->recoilUntil = 0;
+         return 0;
+@@ -608,7 +635,7 @@
+     /* Let the game's standing turn state own the body heading. Directly
+      * writing setsubroty here competed with animation/route rotation and
+      * made the character spin continuously. */
+-    int closeEngagement = nearest < SIM_ENGAGE_STOP_RANGE * SIM_ENGAGE_STOP_RANGE;
++    int closeEngagement = nearest < policy->hold_range * policy->hold_range;
+     float desired = atan2f(dx, dz);
+     if (desired < 0.0f) desired += M_TAU_F;
+     if (closeEngagement) {
+@@ -629,7 +656,7 @@
+     if (fabsf(atan2f(sinf(desired - heading), cosf(desired - heading))) > 0.12f ||
+         polls < route->nextShot) return closeEngagement;
+ 
+-    route->nextShot = polls + SIM_FIRE_INTERVAL_POLLS;
++    route->nextShot = polls + policy->shot_interval;
+     route->flashUntil = polls + SIM_FLASH_POLLS;
+     route->recoilUntil = polls + SIM_RECOIL_POLLS;
+     chr->aimendrshoulder = elevation + 0.18f;

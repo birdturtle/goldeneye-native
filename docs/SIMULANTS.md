@@ -50,6 +50,44 @@ of close range or sight is lost. While unarmed it still prioritizes a world
 firearm. This is the first engagement decision, not a finished aiming, weapon
 balance or cover system.
 
+## Weapon policy foundation
+
+The Simulant classifies the selected match weapons and ranks usable world
+firearms by preference and travel distance. It retains its current pickup goal
+unless another choice is substantially better. Pistol, automatic, shotgun,
+rifle, sniper and magnum classes have separate shot intervals and distances at
+which a visible bot stops its route to face the opponent. The policy lives in
+`getv/port/src/mp_sim_policy.c` and the game-side adapter is in patch `0042`.
+Its design follows the separation of weapon choice and distance choice in the
+MIT Perfect Dark decomp (`n64decomp/perfect_dark`, commit `169ed48bdcbf`,
+`src/game/botinv.c` and `src/game/botcmd.c`); these GoldenEye values are new.
+
+Knife, grenade, mine, launcher and laser classes currently have no pickup
+value. The combat executor only applies firearm hits, so picking up those
+items before their attack paths exist would leave a bot unable to fight.
+Their next phase needs melee, projectile and explosion paths with multiplayer
+ownership and scoring. Armour also needs a separate health and armour model:
+character negative `damage` represents armour, whereas the human multiplayer
+player stores health and armour separately. Simply setting negative character
+damage would heal a wounded Simulant when it picked up armour.
+
+## Close combat
+
+When an unarmed Simulant encounters a visible opponent at close range, it
+stops to slap instead of continuing toward a weapon pickup. At longer range
+it still prioritizes a world firearm. An armed one chooses a slap at extreme
+close range; otherwise it uses its firearm. A strike requires
+an unobstructed STAN segment, a narrow facing cone and a target on the same
+level. The damage and kill credit still pass through `mpCombatDamageHuman`,
+and the third-person character briefly extends a hand for the hit. The
+slapper's cadence and range decision are in `mp_sim_policy`, with the game-side
+execution in patch `0043-simulant-melee-combat.patch`.
+
+Throwing knives and explosives need a separate projectile owner: GoldenEye's
+human throw routines encode an owner as a human player index and use it later
+for impact and explosion credit. A Simulant roster slot cannot be inserted
+into those routines as though it were a controller player.
+
 ## Generated route constraints
 
 - `stanFillSearch` reads each tile's `point[1].link`: a nonzero high portion

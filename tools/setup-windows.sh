@@ -175,7 +175,8 @@ for p in 0001-source 0006-fov-live-setter 0007-load-trace \
          0031-native-joy-poll-handshake 0032-manual-reload 0033-simulant-multiplayer 0034-file-select-folder-hitbox \
          0035-multiplayer-controls-simulant-speed 0036-native-gopos-animation-gait \
          0037-generated-simulant-navigation 0038-simulant-engagement-priority \
-         0039-simulant-native-facing 0040-background-asset-guard 0041-background-resource-registration; do
+         0039-simulant-native-facing 0040-background-asset-guard 0041-background-resource-registration \
+         0042-simulant-weapon-policy 0043-simulant-melee-combat; do
   if ( cd "$DECOMP" && git apply --reverse --check "$HERE/getv/patches/$p.patch" ) 2>/dev/null; then
     echo "$p.patch: already applied"
   else
