@@ -66,6 +66,16 @@ int main(void)
           "melee requires the target to be on the same level");
     check(!mpSimShouldSlap(146, 0, 0) && !mpSimShouldSlap(-1, 0, 0),
           "melee respects range and invalid distance");
+    check(mpSimCombatTargetInRange(1200, 0, 0) &&
+          !mpSimCombatTargetInRange(1600, 0, 0) &&
+          !mpSimCombatTargetInRange(1200, 300, 0),
+          "visible targets at medium distance are acquired, with floor separation constrained");
+    check(mpSimCombatAimReady(0.80f, 1, 0) &&
+          mpSimCombatAimReady(-0.80f, 1, 0) &&
+          !mpSimCombatAimReady(1.1f, 1, 0) &&
+          !mpSimCombatAimReady(0.80f, 0, 0) &&
+          !mpSimCombatAimReady(0.40f, 1, 1),
+          "moving firearms track wider than thrown weapons while melee stays narrow");
     check(mpSimCombatDistanceMode(100, 310, 1, 0, MP_SIM_COMBAT_ORBIT) ==
           MP_SIM_COMBAT_RETREAT &&
           mpSimCombatDistanceMode(310, 310, 1, 0, MP_SIM_COMBAT_RETREAT) ==

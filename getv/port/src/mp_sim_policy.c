@@ -93,6 +93,23 @@ int mpSimShouldSlap(float horizontal_distance, float vertical_distance,
            vertical_distance >= -75.0f && vertical_distance <= 75.0f;
 }
 
+int mpSimCombatTargetInRange(float dx, float dy, float dz)
+{
+    return dx * dx + dz * dz + 16.0f * dy * dy <
+           MP_SIM_COMBAT_SIGHT_RANGE * MP_SIM_COMBAT_SIGHT_RANGE;
+}
+
+float mpSimCombatAimCone(int firearm, int melee)
+{
+    return melee ? 0.35f : (firearm ? 0.95f : 0.65f);
+}
+
+int mpSimCombatAimReady(float facing_error, int firearm, int melee)
+{
+    float cone = mpSimCombatAimCone(firearm, melee);
+    return facing_error >= -cone && facing_error <= cone;
+}
+
 /* PD botcmd.c uses advance/backup/OK bands and 25-unit persistence. Here OK
  * becomes orbit so GoldenEye's actor keeps maneuvering during a firefight.
  * n64decomp/perfect_dark @ 169ed48bdcbfb3b568b028bd5bebb27680073514,

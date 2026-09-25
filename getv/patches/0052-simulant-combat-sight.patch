@@ -1,0 +1,58 @@
+--- a/src/game/mp_sim_policy.h
++++ b/src/game/mp_sim_policy.h
+@@ -63,6 +63,14 @@
+ int mpSimShouldSlap(float horizontal_distance, float vertical_distance,
+                     int has_firearm);
+ 
++/* The sight envelope uses the same vertical weighting as the game adapter.
++ * Armed shots can track farther off the movement heading; thrown objects
++ * retain the narrower cone, and melee still requires a direct facing. */
++#define MP_SIM_COMBAT_SIGHT_RANGE 1500.0f
++int mpSimCombatTargetInRange(float dx, float dy, float dz);
++float mpSimCombatAimCone(int firearm, int melee);
++int mpSimCombatAimReady(float facing_error, int firearm, int melee);
++
+ /* Like PD's botcmd distance modes, but the game adapter chooses a reachable
+  * GoldenEye waypoint for each move. ORBIT keeps a visible fight in motion. */
+ typedef enum MpSimCombatMode {
+--- a/src/game/simulant_probe.c
++++ b/src/game/simulant_probe.c
+@@ -52,7 +52,6 @@
+ #define SIM_PROBE_CHRNUM 0x6fff
+ #define SIM_ROUTE_REPLAN_POLLS 90
+ #define SIM_ROUTE_STALL_POLLS 240
+-#define SIM_FIRE_RANGE 1000.0f
+ #define SIM_FLASH_POLLS 3
+ #define SIM_RECOIL_POLLS 5
+ 
+@@ -1107,7 +1106,7 @@
+ static int simProbeCombat(ChrRecord *chr, unsigned polls, SimProbeRoute *route)
+ {
+     PropRecord *gun = chrGetEquippedWeaponProp(chr, GUNRIGHT);
+-    float nearest = SIM_FIRE_RANGE * SIM_FIRE_RANGE;
++    float nearest = MP_SIM_COMBAT_SIGHT_RANGE * MP_SIM_COMBAT_SIGHT_RANGE;
+     int victim = -1;
+     if (!chr->model || !chr->prop || !chr->prop->stan ||
+         (chr->actiontype != ACT_STAND && chr->actiontype != ACT_GOPOS)) return 0;
+@@ -1151,7 +1150,7 @@
+         float dy = player->prop->pos.y - chr->prop->pos.y;
+         float dz = player->prop->pos.z - chr->prop->pos.z;
+         float dist = dx * dx + dz * dz + 16.0f * dy * dy;
+-        if (dist >= nearest) continue;
++        if (dist >= nearest || !mpSimCombatTargetInRange(dx, dy, dz)) continue;
+         chrSetMoving(chr, 0);
+         int visible = stanTestLineUnobstructed(&tile, chr->prop->pos.x,
+                            chr->prop->pos.z, player->prop->pos.x,
+@@ -1215,9 +1214,10 @@
+     float facingError = atan2f(sinf(desired - heading), cosf(desired - heading));
+     /* Let the arm track a target during native GOPOS movement. Projectile
+      * velocity uses the current target vector; slaps still require body yaw. */
+-    chr->aimendsideback = fmaxf(-0.65f, fminf(0.65f, facingError));
++    float aimCone = mpSimCombatAimCone(policy->firearm_ready, slap);
++    chr->aimendsideback = fmaxf(-aimCone, fminf(aimCone, facingError));
+     chr->aimendcount = 6;
+-    if (fabsf(facingError) > (slap ? 0.35f : 0.65f) ||
++    if (!mpSimCombatAimReady(facingError, policy->firearm_ready, slap) ||
+         polls < route->nextShot) return victim + 1;
+ 
+     if ((throwingKnife && nearest >= 170.0f * 170.0f &&

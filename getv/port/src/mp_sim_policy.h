@@ -63,6 +63,14 @@ int mpSimRemoteDetonationAllowed(int timer, int airborne,
 int mpSimShouldSlap(float horizontal_distance, float vertical_distance,
                     int has_firearm);
 
+/* The sight envelope uses the same vertical weighting as the game adapter.
+ * Armed shots can track farther off the movement heading; thrown objects
+ * retain the narrower cone, and melee still requires a direct facing. */
+#define MP_SIM_COMBAT_SIGHT_RANGE 1500.0f
+int mpSimCombatTargetInRange(float dx, float dy, float dz);
+float mpSimCombatAimCone(int firearm, int melee);
+int mpSimCombatAimReady(float facing_error, int firearm, int melee);
+
 /* Like PD's botcmd distance modes, but the game adapter chooses a reachable
  * GoldenEye waypoint for each move. ORBIT keeps a visible fight in motion. */
 typedef enum MpSimCombatMode {
